@@ -27,18 +27,19 @@ check_line(){
         return 0
     fi
 
-    for v in ${values[@]}; do
+    for v in "${values[@]}"; do
         matched=0
-        for av in ${allowed_values[@]}; do 
-            if [ "$v" = "$av" ]; then 
+        for a in "${allowed_values[@]}"; do 
+            if [ "$v" = "$a" ]; then 
                 matched=1
+                break
             fi 
         done 
         if [ $matched -eq 0 ]; then 
-            echo "Error! '$v' is not allowed as $field_name"
+            echo "Error! $v is not allowed as $field_name"
             exit 1
         fi
     done 
 }
-
-check_line "use_archive" "a b" 2 "*"
+line="a b c"
+check_line "aname" "$line" 3 "a y z"
