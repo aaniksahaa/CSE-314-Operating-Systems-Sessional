@@ -1,0 +1,11 @@
+true
+zip rar
+c cpp python sh
+100
+5
+/mnt/h/Study-L3T2/Assignments/CSE-314-Operating-Systems-Sessional/Assignment-1-Bash-Scripting/AutoGrader/assignment
+2005061 2005075
+/mnt/h/Study-L3T2/Assignments/CSE-314-Operating-Systems-Sessional/Assignment-1-Bash-Scripting/AutoGrader/assignment/expected_output.txt
+10
+/mnt/h/Study-L3T2/Assignments/CSE-314-Operating-Systems-Sessional/Assignment-1-Bash-Scripting/AutoGrader/assignment/plagiarism.txt
+100

@@ -255,7 +255,6 @@ for f in $working_dir_listing; do
             all_ids+=("$f") 
             folder_name["$f"]="$f"
             issue_case["$f"]=1
-            mv "$fullpath" "$issues_dir"
         elif [[ "$(is_numeric $f)" -eq 1 ]]; then
             all_ids+=("$f")
             issue_case["$f"]=5
@@ -295,13 +294,13 @@ for f in $working_dir_listing; do
                 fi
                  
             else
+                mkdir -p "$working_dir/$name"
+                mv "$fullpath" "$working_dir/$name"
                 if [[ $(is_valid_id $name) -eq 1 ]]; then
-                    mkdir -p "$working_dir/$name"
-                    mv "$fullpath" "$working_dir/$name"
                     folder_name["$name"]="$name"
                 else 
+                    mv "$working_dir/$name" "$issues_dir"
                     issue_case["$name"]=5
-                    mv "$fullpath" "$issues_dir"
                 fi 
             fi 
         fi
