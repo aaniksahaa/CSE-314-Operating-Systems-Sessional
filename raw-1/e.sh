@@ -200,23 +200,7 @@ is_valid_language(){
     echo 0
 }
 
-unarchive(){
-    # $1 => filepath
-    # $2 => extension
-
-    case $2 in 
-        zip) unzip $1 ;;
-        rar) unrar x $1 ;;
-        tar) tar -xf $1 ;;
-        *) echo 0
-           return 1;;
-    esac
-    echo 1
-}
-
 working_dir_listing=`ls $working_dir`
-
-declare -A folder_name
 
 for f in $working_dir_listing; do 
     fullpath="$working_dir/$f"
@@ -226,7 +210,6 @@ for f in $working_dir_listing; do
         if [[ $(is_valid_id $f) -eq 1 ]]; then
             # unarchived folder submission 
             echo "unarchived folder"
-            folder_name["$f"]="$f"
         fi 
     else 
         IFS='.' read -r name extension <<< "$f"
@@ -235,17 +218,10 @@ for f in $working_dir_listing; do
         fi 
         if [[ $(is_valid_id $name) -eq 1 ]]; then 
             if [[ $(is_valid_archive_format $extension) -eq 1 ]]; then
-                if [[ $(unarchive "$fullpath" "$extension") -eq 1 ]]; then
-                    echo "unarchived"
-                fi 
                 echo "vaf"
-            elif [[ $(is_valid_language $extension) -eq 1 ]]; then
+            if [[ $(is_valid_language $extension) -eq 1 ]]; then
                 echo "vaf"
             fi 
         fi
     fi 
 done
-
-for k in ${!folder_name[@]}; do 
-    echo $k
-done 

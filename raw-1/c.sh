@@ -1,19 +1,22 @@
 #!/usr/bin/bash
 
-check_valid_dir(){
-    if [ ! -d "$1" ]; then 
-        echo "Error: '$1' is not a valid directory"
-        exit 1
-    fi
-} 
+filename="example.7z"
 
-check_valid_file(){
-    if [ ! -f "$1" ]; then 
-        echo "Error: '$1' is not a valid file"
-        exit 1
-    fi
-} 
+# Extract the name (without extension) using `split`
+IFS='.' read -r name extension <<< "$filename"
 
-check_valid_file "a.sh"
+# Handle case where there is no extension
+if [[ "$name" == "$extension" ]]; then
+  extension=""
+# else
+#   name="${filename%.*}"
+fi
 
-echo "ok"
+echo "Name: $name"
+echo "Extension: $extension"
+
+# files=`ls ./assignment`
+
+# for f in $files; do 
+#     echo $f
+# done 
