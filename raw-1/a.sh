@@ -1,5 +1,22 @@
 #!/usr/bin/bash
 
+create_or_clear_directories(){
+    for dir in $*; do
+        if [[ -d "$dir" ]]; then
+            rm -rf "$dir"/*
+        else
+            mkdir -p "$dir"
+        fi
+    done
+}
+
+issues_dir="issues"
+checked_dir="checked"
+
+create_or_clear_directories "$issues_dir" "$checked_dir"
+
+##############################################
+
 show_usage(){
     echo "Invalid command line arguments"
     echo "Usage: <script_name.sh> -i <input_filepath>"
@@ -227,6 +244,7 @@ is_valid_language(){
 
 working_dir_listing=`ls $working_dir`
 
+all_ids=()
 declare -A folder_name
 declare -A issue_case 
 
@@ -234,16 +252,22 @@ for f in $working_dir_listing; do
     fullpath="$working_dir/$f"
     if [[ -d $fullpath ]]; then 
         if [[ $(is_valid_id $f) -eq 1 ]]; then
-            # unarchived folder submission 
+            all_ids+=("$f") 
             folder_name["$f"]="$f"
             issue_case["$f"]=1
+            mv "$fullpath" "$issues_dir"
+        elif [[ $(is_numeric $f) -eq 1 ]]; then
+            all_ids+=("$f")
+            issue_case["$f"]=5
+            mv "$fullpath" "$issues_dir"
         fi 
     else 
         IFS='.' read -r name extension <<< "$f"
         if [[ "$name" == "$extension" ]]; then 
             extension=""
         fi 
-        if [[ $(is_valid_id $name) -eq 1 ]]; then 
+        if [[ $(is_numeric $name) -eq 1 ]]; then 
+            all_ids+=("$name")
             if [[ $(is_archive_format $extension) -eq 1 ]]; then
                 rm -rf "$temp_dir"/*
                 case $extension in 
@@ -258,19 +282,27 @@ for f in $working_dir_listing; do
                 if [[ "$created_folder" != "$name" ]]; then 
                     issue_case["$name"]=4
                 fi 
-                folder_name["$name"]="$created_folder"
-                rm -rf "$working_dir/$created_folder"
-                mv "$temp_dir/$created_folder" "$working_dir"
-                if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
-                    issue_case["$name"]=2
-                fi 
+                if [[ $(is_valid_id $name) -eq 1 ]]; then 
+                    folder_name["$name"]="$created_folder"
+                    rm -rf "$working_dir/$created_folder"
+                    mv "$temp_dir/$created_folder" "$working_dir"
+                    if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
+                        issue_case["$name"]=2
+                    fi
+                else 
+                    issue_case["$name"]=5
+                    mv "$temp_dir/$created_folder" "$issues_dir"
+                fi
+                 
             else
-                mkdir -p "$working_dir/$name"
-                mv "$fullpath" "$working_dir/$name"
-                folder_name["$name"]="$name"
-                # if [[ $(is_valid_language $extension) -ne 1 ]]; then
-                #     issue_case["$name"]=3
-                # fi
+                if [[ $(is_valid_id $name) -eq 1 ]]; then
+                    mkdir -p "$working_dir/$name"
+                    mv "$fullpath" "$working_dir/$name"
+                    folder_name["$name"]="$name"
+                else 
+                    issue_case["$name"]=5
+                    mv "$fullpath" "$issues_dir"
+                fi 
             fi 
         fi
     fi 
@@ -327,28 +359,16 @@ done
 
 ################ prepare issues and checked folder ##################
 
-create_or_clear_directories(){
-    for dir in $*; do
-        if [[ -d "$dir" ]]; then
-            rm -rf "$dir"/*
-        else
-            mkdir -p "$dir"
-        fi
-    done
-}
-
-create_or_clear_directories "issues" "checked"
-
 declare -A submission_penalty
 declare -A plagiarism_penalty
 
 for id in ${!folder_name[@]}; do
     fullpath="$working_dir/${folder_name[$id]}"
     if [[ -n "${issue_case[$id]}" ]]; then
-        mv "$fullpath" "issues"
+        mv "$fullpath" "$issues_dir"
         submission_penalty["$id"]=$penalty_submission
     else
-        mv "$fullpath" "checked"
+        mv "$fullpath" "$checked_dir"
         submission_penalty["$id"]=0
     fi
     penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
@@ -358,3 +378,7 @@ for id in ${!folder_name[@]}; do
         plagiarism_penalty["$id"]=0
     fi 
 done
+
+for id in ${all_ids[@]}; do
+    echo $id
+done 
