@@ -118,6 +118,15 @@ do
             ;;
         3)  check_line "allowed_programming_languages" "$line" 0 "c cpp python sh"
             read -a allowed_programming_languages <<< $line
+            has_python=0
+            for lang in ${allowed_programming_languages[@]}; do 
+                if [[ $lang == "python" ]]; then
+                    has_python=1 
+                fi
+            done
+            if [[ $has_python == 1 ]]; then
+                allowed_programming_languages+=("py")
+            fi
             ;;
         4)  check_line "total_marks" "$line" 1 "#"
             total_marks=$line
@@ -267,7 +276,47 @@ for f in $working_dir_listing; do
     fi 
 done
 
-##################################################
+############### evaluate ###################
+
+for id in ${!folder_name[@]}; do
+    fullpath="$working_dir/${folder_name[$id]}"
+    files=$( find "$fullpath" -type f )
+    found=0
+    target_file=""
+    for f in ${files[@]}; do
+        basename=$( basename "$f" )
+        IFS='.' read -r name extension <<< "$basename"
+        if [[ "$name" == "$extension" ]]; then 
+            extension=""
+        fi
+        if [[ $(is_valid_language $extension) -eq 1 ]]; then
+            found=1
+            target_file="$f"
+            break
+        fi
+    done
+    if [[ $found -ne 1 ]]; then
+        issue_case["$id"]=3
+    else 
+        case $extension in
+            c)  gcc "$target_file" -o "$temp_dir/a.out"
+                chmod +x "$temp_dir/a.out"
+                "$temp_dir/a.out" > "$temp_dir/output.txt"
+                ;;
+            cpp)g++ "$target_file" -o "$temp_dir/a.out"
+                chmod +x "$temp_dir/a.out"
+                "$temp_dir/a.out" > "$temp_dir/output.txt"
+                ;;
+            py) python3 "$target_file" > "$temp_dir/output.txt"
+                ;;
+            sh) chmod +x "$target_file" 
+                "$target_file" > "$temp_dir/output.txt"
+                ;;
+        esac 
+    fi
+done  
+
+################ prepare issues and checked folder ##################
 
 create_or_clear_directories(){
     for dir in $*; do
@@ -282,8 +331,10 @@ create_or_clear_directories(){
 create_or_clear_directories "issues" "checked"
 
 for f in ${!folder_name[@]}; do
-    fullpath="$working_dir/$f"
-    echo "$f => ${folder_name[$f]}, ${issue_case[$f]}"
-done  
-
-echo ${folder_name["2005072"]}
+    fullpath="$working_dir/${folder_name[$f]}"
+    if [[ -n "${issue_case[$f]}" ]]; then
+        mv "$fullpath" "issues"
+    else
+        mv "$fullpath" "checked"
+    fi
+done

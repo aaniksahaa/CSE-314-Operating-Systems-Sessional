@@ -1,4 +1,6 @@
 #!/usr/bin/bash
 
-folder=$(unzip -qql nf2.zip | head -n1 | awk '{print $4}' | sed 's@/.*@@')
-echo "Extracted folder: $folder"
+gcc a.c -o a.out
+chmod +x a.out
+./a.out > out.txt
+rm -f a.out
