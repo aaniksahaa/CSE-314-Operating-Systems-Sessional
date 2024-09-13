@@ -278,6 +278,8 @@ done
 
 ############### evaluate ###################
 
+declare -A mismatch_penalty
+
 for id in ${!folder_name[@]}; do
     fullpath="$working_dir/${folder_name[$id]}"
     files=$( find "$fullpath" -type f )
@@ -298,21 +300,28 @@ for id in ${!folder_name[@]}; do
     if [[ $found -ne 1 ]]; then
         issue_case["$id"]=3
     else 
+        output_file="$fullpath/${id}_output.txt"
         case $extension in
             c)  gcc "$target_file" -o "$temp_dir/a.out"
                 chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$temp_dir/output.txt"
+                "$temp_dir/a.out" > "$output_file"
                 ;;
             cpp)g++ "$target_file" -o "$temp_dir/a.out"
                 chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$temp_dir/output.txt"
+                "$temp_dir/a.out" > "$output_file"
                 ;;
-            py) python3 "$target_file" > "$temp_dir/output.txt"
+            py) python3 "$target_file" > "$output_file"
                 ;;
             sh) chmod +x "$target_file" 
-                "$target_file" > "$temp_dir/output.txt"
+                "$target_file" > "$output_file"
                 ;;
         esac 
+        mismatch_penalty["$id"]=0
+        while IFS= read line; do 
+            if ! grep -Fxq "$line" "$output_file"; then
+                mismatch_penalty["$id"]=$(( ${mismatch_penalty["$id"]} + $penalty_unmatched ))
+            fi 
+        done < "$expected_output_file"
     fi
 done  
 
@@ -330,11 +339,22 @@ create_or_clear_directories(){
 
 create_or_clear_directories "issues" "checked"
 
-for f in ${!folder_name[@]}; do
-    fullpath="$working_dir/${folder_name[$f]}"
-    if [[ -n "${issue_case[$f]}" ]]; then
+declare -A submission_penalty
+declare -A plagiarism_penalty
+
+for id in ${!folder_name[@]}; do
+    fullpath="$working_dir/${folder_name[$id]}"
+    if [[ -n "${issue_case[$id]}" ]]; then
         mv "$fullpath" "issues"
+        submission_penalty["$id"]=$penalty_submission
     else
         mv "$fullpath" "checked"
+        submission_penalty["$id"]=0
     fi
+    penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
+    if ! grep -q "$id" "$plagiarism_analysis_file"; then
+        plagiarism_penalty["$id"]=$penalty_plagiarism
+    else 
+        plagiarism_penalty["$id"]=0
+    fi 
 done
