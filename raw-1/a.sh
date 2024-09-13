@@ -164,6 +164,9 @@ fi
 
 ########## parsing end ############
 
+temp_dir="$working_dir/temp"
+mkdir -p $temp_dir
+
 is_valid_id(){
     # expected args
 
@@ -178,6 +181,17 @@ is_valid_id(){
     else 
         echo 1
     fi
+}
+
+is_archive_format(){
+    archive_formats=("zip" "rar" "tar")
+    for a in ${archive_formats[@]}; do 
+        if [[ "$1" == "$a" ]]; then 
+            echo 1
+            return 0
+        fi 
+    done
+    echo 0
 }
 
 is_valid_archive_format(){
@@ -200,33 +214,20 @@ is_valid_language(){
     echo 0
 }
 
-unarchive(){
-    # $1 => filepath
-    # $2 => extension
-
-    case $2 in 
-        zip) unzip $1 ;;
-        rar) unrar x $1 ;;
-        tar) tar -xf $1 ;;
-        *) echo 0
-           return 1;;
-    esac
-    echo 1
-}
+########## locate or initialize appropriate directories ###########
 
 working_dir_listing=`ls $working_dir`
 
 declare -A folder_name
+declare -A issue_case 
 
 for f in $working_dir_listing; do 
     fullpath="$working_dir/$f"
-    echo $f
     if [[ -d $fullpath ]]; then 
-        echo $f, $min_id, $max_id
         if [[ $(is_valid_id $f) -eq 1 ]]; then
             # unarchived folder submission 
-            echo "unarchived folder"
             folder_name["$f"]="$f"
+            issue_case["$f"]=1
         fi 
     else 
         IFS='.' read -r name extension <<< "$f"
@@ -234,18 +235,55 @@ for f in $working_dir_listing; do
             extension=""
         fi 
         if [[ $(is_valid_id $name) -eq 1 ]]; then 
-            if [[ $(is_valid_archive_format $extension) -eq 1 ]]; then
-                if [[ $(unarchive "$fullpath" "$extension") -eq 1 ]]; then
-                    echo "unarchived"
+            if [[ $(is_archive_format $extension) -eq 1 ]]; then
+                rm -rf "$temp_dir"/*
+                case $extension in 
+                    zip)unzip -o $fullpath -d "$temp_dir" > /dev/null 2>&1
+                        ;;
+                    rar)unrar -o+ x $fullpath "$temp_dir" > /dev/null 2>&1
+                        ;;
+                    tar)tar --overwrite -xf $fullpath -C "$temp_dir" > /dev/null 2>&1
+                        ;;
+                esac
+                created_folder=$( ls $temp_dir | head -n1 )
+                if [[ "$created_folder" != "$name" ]]; then 
+                    issue_case["$name"]=4
                 fi 
-                echo "vaf"
-            elif [[ $(is_valid_language $extension) -eq 1 ]]; then
-                echo "vaf"
+                folder_name["$name"]="$created_folder"
+                rm -rf "$working_dir/$created_folder"
+                mv "$temp_dir/$created_folder" "$working_dir"
+                if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
+                    issue_case["$name"]=2
+                fi 
+            else
+                mkdir -p "$working_dir/$name"
+                mv "$fullpath" "$working_dir/$name"
+                folder_name["$name"]="$name"
+                # if [[ $(is_valid_language $extension) -ne 1 ]]; then
+                #     issue_case["$name"]=3
+                # fi
             fi 
         fi
     fi 
 done
 
-for k in ${!folder_name[@]}; do 
-    echo $k
-done 
+##################################################
+
+create_or_clear_directories(){
+    for dir in $*; do
+        if [[ -d "$dir" ]]; then
+            rm -rf "$dir"/*
+        else
+            mkdir -p "$dir"
+        fi
+    done
+}
+
+create_or_clear_directories "issues" "checked"
+
+for f in ${!folder_name[@]}; do
+    fullpath="$working_dir/$f"
+    echo "$f => ${folder_name[$f]}, ${issue_case[$f]}"
+done  
+
+echo ${folder_name["2005072"]}

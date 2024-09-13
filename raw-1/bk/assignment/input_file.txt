@@ -1,0 +1,11 @@
+true
+zip tar rar
+c cpp python sh
+100
+5
+/home/hp/abirsh
+2005061 2005074
+/home/hp/abirsh/expected_output.txt
+10
+/home/hp/abirsh/plagiarism.txt
+100
