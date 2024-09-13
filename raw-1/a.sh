@@ -115,7 +115,7 @@ check_valid_file $input_file
 
 # convert to unix format
 # to get rid of CR/LF issues
-dos2unix $input_file
+dos2unix $input_file > /dev/null 2>&1
 
 line_count=1
 
@@ -251,12 +251,12 @@ declare -A issue_case
 for f in $working_dir_listing; do 
     fullpath="$working_dir/$f"
     if [[ -d $fullpath ]]; then 
-        if [[ $(is_valid_id $f) -eq 1 ]]; then
+        if [[ "$(is_valid_id $f)" -eq 1 ]]; then
             all_ids+=("$f") 
             folder_name["$f"]="$f"
             issue_case["$f"]=1
             mv "$fullpath" "$issues_dir"
-        elif [[ $(is_numeric $f) -eq 1 ]]; then
+        elif [[ "$(is_numeric $f)" -eq 1 ]]; then
             all_ids+=("$f")
             issue_case["$f"]=5
             mv "$fullpath" "$issues_dir"
@@ -266,23 +266,23 @@ for f in $working_dir_listing; do
         if [[ "$name" == "$extension" ]]; then 
             extension=""
         fi 
-        if [[ $(is_numeric $name) -eq 1 ]]; then 
+        if [[ "$(is_numeric $name)" -eq 1 ]]; then 
             all_ids+=("$name")
             if [[ $(is_archive_format $extension) -eq 1 ]]; then
                 rm -rf "$temp_dir"/*
                 case $extension in 
-                    zip)unzip -o $fullpath -d "$temp_dir" > /dev/null 2>&1
+                    zip)unzip -o $fullpath -d "$temp_dir" > /dev/null
                         ;;
-                    rar)unrar -o+ x $fullpath "$temp_dir" > /dev/null 2>&1
+                    rar)unrar -o+ x $fullpath "$temp_dir" > /dev/null
                         ;;
-                    tar)tar --overwrite -xf $fullpath -C "$temp_dir" > /dev/null 2>&1
+                    tar)tar --overwrite -xf $fullpath -C "$temp_dir" > /dev/null
                         ;;
                 esac
                 created_folder=$( ls $temp_dir | head -n1 )
                 if [[ "$created_folder" != "$name" ]]; then 
                     issue_case["$name"]=4
                 fi 
-                if [[ $(is_valid_id $name) -eq 1 ]]; then 
+                if [[ "$(is_valid_id $name)" -eq 1 ]]; then 
                     folder_name["$name"]="$created_folder"
                     rm -rf "$working_dir/$created_folder"
                     mv "$temp_dir/$created_folder" "$working_dir"
@@ -362,23 +362,50 @@ done
 declare -A submission_penalty
 declare -A plagiarism_penalty
 
-for id in ${!folder_name[@]}; do
-    fullpath="$working_dir/${folder_name[$id]}"
-    if [[ -n "${issue_case[$id]}" ]]; then
-        mv "$fullpath" "$issues_dir"
-        submission_penalty["$id"]=$penalty_submission
-    else
-        mv "$fullpath" "$checked_dir"
-        submission_penalty["$id"]=0
-    fi
+for id in ${all_ids[@]}; do
     penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
-    if ! grep -q "$id" "$plagiarism_analysis_file"; then
+    if grep -q "$id" "$plagiarism_analysis_file"; then
         plagiarism_penalty["$id"]=$penalty_plagiarism
     else 
         plagiarism_penalty["$id"]=0
+    fi
+    if [[ $(is_valid_id "$id") -ne 1 ]]; then
+        submission_penalty["$id"]=$penalty_submission
+    elif [[ -n "${folder_name[$id]}" ]]; then
+        fullpath="$working_dir/${folder_name[$id]}"
+        if [[ -n ${issue_case[$id]} ]]; then
+            mv "$fullpath" "$issues_dir"
+            submission_penalty["$id"]=$penalty_submission
+        else
+            mv "$fullpath" "$checked_dir"
+            submission_penalty["$id"]=0
+        fi
+    fi
+    if [[ -z ${mismatch_penalty[$id]} ]]; then 
+        mismatch_penalty[$id]=0
+    fi
+    if [[ -z ${submission_penalty[$id]} ]]; then 
+        submission_penalty[$id]=0
     fi 
 done
 
-for id in ${all_ids[@]}; do
-    echo $id
+sorted_ids=$( for i in ${all_ids[@]}; do 
+                    echo $i
+                done | sort
+                 )
+
+> "marks.csv"
+
+echo "id, marks, marks_deducted, total_marks, remarks" > "marks.csv"
+
+for id in ${sorted_ids[@]}; do
+    marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
+    marks_deducted=$(( ${mismatch_penalty[$id]} + ${submission_penalty[$id]} + ${plagiarism_penalty[$id]} ))
+    if [[ -n ${issue_case[$id]} ]]; then
+        remarks="issue case#${issue_case[$id]}"
+    else
+        remarks=" "
+    fi
+    row="${id}, ${marks}, ${marks_deducted}, ${total_marks}, ${remarks}" 
+    echo $row >> "marks.csv"
 done 
