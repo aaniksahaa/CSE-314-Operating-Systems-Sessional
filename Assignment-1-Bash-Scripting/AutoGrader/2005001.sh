@@ -282,11 +282,13 @@ for f in $working_dir_listing; do
                     issue_case["$name"]=4
                 fi 
                 if [[ "$(is_valid_id $name)" -eq 1 ]]; then 
-                    folder_name["$name"]="$created_folder"
-                    rm -rf "$working_dir/$created_folder"
-                    mv "$temp_dir/$created_folder" "$working_dir"
                     if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
                         issue_case["$name"]=2
+                        mv "$temp_dir/$created_folder" "$issues_dir"
+                    else 
+                        folder_name["$name"]="$created_folder"
+                        rm -rf "$working_dir/$created_folder"
+                        mv "$temp_dir/$created_folder" "$working_dir"
                     fi
                 else 
                     issue_case["$name"]=5
@@ -334,12 +336,20 @@ for id in ${!folder_name[@]}; do
         output_file="$fullpath/${id}_output.txt"
         case $extension in
             c)  gcc "$target_file" -o "$temp_dir/a.out"
-                chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$output_file"
+                if [[ $? -eq 0 ]]; then
+                    chmod +x "$temp_dir/a.out"
+                    "$temp_dir/a.out" > "$output_file"
+                else  
+                    > "$output_file"
+                fi
                 ;;
             cpp)g++ "$target_file" -o "$temp_dir/a.out"
-                chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$output_file"
+                if [[ $? -eq 0 ]]; then
+                    chmod +x "$temp_dir/a.out"
+                    "$temp_dir/a.out" > "$output_file"
+                else 
+                    > "$output_file"
+                fi
                 ;;
             py) python3 "$target_file" > "$output_file"
                 ;;
@@ -398,12 +408,18 @@ sorted_ids=$( for i in ${all_ids[@]}; do
 echo "id, marks, marks_deducted, total_marks, remarks" > "marks.csv"
 
 for id in ${sorted_ids[@]}; do
-    marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
+    if [[ -z ${folder_name[$id]} || ${issue_case[$id]} -eq 3 ]]; then
+        marks=0 
+    else 
+        marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
+    fi 
     marks_deducted=$(( ${mismatch_penalty[$id]} + ${submission_penalty[$id]} + ${plagiarism_penalty[$id]} ))
+    remarks=""
     if [[ -n ${issue_case[$id]} ]]; then
-        remarks="issue case#${issue_case[$id]}"
-    else
-        remarks=" "
+        remarks+="issue case#${issue_case[$id]}; "
+    fi
+    if [[ ${plagiarism_penalty[$id]} -gt 0 ]]; then
+        remarks+="plagiarism detected; "
     fi
     row="${id}, ${marks}, ${marks_deducted}, ${total_marks}, ${remarks}" 
     echo $row >> "marks.csv"
