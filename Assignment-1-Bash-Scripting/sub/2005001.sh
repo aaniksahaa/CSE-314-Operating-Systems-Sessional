@@ -10,13 +10,6 @@ create_or_clear_directories(){
     done
 }
 
-issues_dir="issues"
-checked_dir="checked"
-
-create_or_clear_directories "$issues_dir" "$checked_dir"
-
-##############################################
-
 show_usage(){
     echo "Invalid command line arguments"
     echo "Usage: <script_name.sh> -i <input_filepath>"
@@ -105,11 +98,22 @@ check_line(){
     done 
 }
 
+########################################
+
+root_dir=$( pwd )
+
+input_dir="${root_dir}/input"
+output_dir="${root_dir}/output"
+
+create_or_clear_directories "$output_dir"
+
+########################################
+
 if [ $# -ne 2 ]; then
     show_usage
 fi
 
-input_file=$2
+input_file="${input_dir}/$2"
 
 check_valid_file $input_file
 
@@ -130,8 +134,12 @@ do
         1)  check_line "use_archived" "$line" 1 "true false"
             use_archived=$line
             ;;
-        2)  check_line "allowed_archive_formats" "$line" 0 "zip rar tar"
-            read -a allowed_archive_formats <<< $line
+        2)  if [[ "$use_archived" == "true" ]]; then 
+                check_line "allowed_archive_formats" "$line" 0 "zip rar tar"
+                read -a allowed_archive_formats <<< $line
+            else 
+                allowed_archive_formats=()
+            fi 
             ;;
         3)  check_line "allowed_programming_languages" "$line" 0 "c cpp python sh"
             read -a allowed_programming_languages <<< $line
@@ -151,8 +159,10 @@ do
         5)  check_line "penalty_unmatched" "$line" 1 "#"
             penalty_unmatched=$line
             ;;
-        6)  working_dir=$line
+        6)  working_dir="${input_dir}/$line"
             check_valid_dir $working_dir
+            cp -R $working_dir $output_dir
+            working_dir="${output_dir}/$line"
             ;;
         7)  read -a id_range <<< $line 
             check_line "id_range" "$line" 2 "#"
@@ -164,12 +174,12 @@ do
                 exit 1
             fi 
             ;;
-        8)  expected_output_file=$line 
+        8)  expected_output_file="${input_dir}/$line"
             check_valid_file $expected_output_file
             ;;
         9)  check_line "penalty_submission" "$line" 1 "#"
             penalty_submission=$line ;;
-        10) plagiarism_analysis_file=$line 
+        10) plagiarism_analysis_file="${input_dir}/$line" 
             check_valid_file $plagiarism_analysis_file
             ;;
         11) check_line "plagiarism_penalty_pct" "$line" 1 "#"
@@ -189,6 +199,15 @@ if [ $line_count != 12 ]; then
 fi
 
 ########## parsing end ############
+
+##############################################
+
+issues_dir="${working_dir}/issues"
+checked_dir="${working_dir}/checked"
+
+create_or_clear_directories "$issues_dir" "$checked_dir"
+
+##############################################
 
 temp_dir="$working_dir/temp"
 mkdir -p $temp_dir
@@ -244,7 +263,7 @@ is_valid_language(){
 
 working_dir_listing=`ls $working_dir`
 
-all_ids=()
+declare -A all_ids
 declare -A folder_name
 declare -A issue_case 
 
@@ -252,11 +271,11 @@ for f in $working_dir_listing; do
     fullpath="$working_dir/$f"
     if [[ -d $fullpath ]]; then 
         if [[ "$(is_valid_id $f)" -eq 1 ]]; then
-            all_ids+=("$f") 
+            all_ids["$f"]="true"
             folder_name["$f"]="$f"
             issue_case["$f"]=1
         elif [[ "$(is_numeric $f)" -eq 1 ]]; then
-            all_ids+=("$f")
+            all_ids["$f"]="true"
             issue_case["$f"]=5
             mv "$fullpath" "$issues_dir"
         fi 
@@ -266,7 +285,7 @@ for f in $working_dir_listing; do
             extension=""
         fi 
         if [[ "$(is_numeric $name)" -eq 1 ]]; then 
-            all_ids+=("$name")
+            all_ids["$name"]="true"
             if [[ $(is_archive_format $extension) -eq 1 ]]; then
                 rm -rf "$temp_dir"/*
                 case $extension in 
@@ -280,13 +299,17 @@ for f in $working_dir_listing; do
                 created_folder=$( ls $temp_dir | head -n1 )
                 if [[ "$created_folder" != "$name" ]]; then 
                     issue_case["$name"]=4
+                    mv "$temp_dir/$created_folder" "$temp_dir/$name"
+                    created_folder="$name" 
                 fi 
                 if [[ "$(is_valid_id $name)" -eq 1 ]]; then 
-                    folder_name["$name"]="$created_folder"
-                    rm -rf "$working_dir/$created_folder"
-                    mv "$temp_dir/$created_folder" "$working_dir"
                     if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
                         issue_case["$name"]=2
+                        # mv "$temp_dir/$created_folder" "$issues_dir"
+                    else 
+                        folder_name["$name"]="$created_folder"
+                        rm -rf "$working_dir/$created_folder"
+                        mv "$temp_dir/$created_folder" "$working_dir"
                     fi
                 else 
                     issue_case["$name"]=5
@@ -322,7 +345,7 @@ for id in ${!folder_name[@]}; do
         if [[ "$name" == "$extension" ]]; then 
             extension=""
         fi
-        if [[ $(is_valid_language $extension) -eq 1 ]]; then
+        if [[ "$name" == "$id" && $(is_valid_language $extension) -eq 1 ]]; then
             found=1
             target_file="$f"
             break
@@ -334,12 +357,20 @@ for id in ${!folder_name[@]}; do
         output_file="$fullpath/${id}_output.txt"
         case $extension in
             c)  gcc "$target_file" -o "$temp_dir/a.out"
-                chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$output_file"
+                if [[ $? -eq 0 ]]; then
+                    chmod +x "$temp_dir/a.out"
+                    "$temp_dir/a.out" > "$output_file"
+                else  
+                    > "$output_file"
+                fi
                 ;;
             cpp)g++ "$target_file" -o "$temp_dir/a.out"
-                chmod +x "$temp_dir/a.out"
-                "$temp_dir/a.out" > "$output_file"
+                if [[ $? -eq 0 ]]; then
+                    chmod +x "$temp_dir/a.out"
+                    "$temp_dir/a.out" > "$output_file"
+                else 
+                    > "$output_file"
+                fi
                 ;;
             py) python3 "$target_file" > "$output_file"
                 ;;
@@ -359,25 +390,26 @@ done
 ################ prepare penalty values ##################
 
 declare -A submission_penalty
-declare -A plagiarism_penalty
 
-for id in ${all_ids[@]}; do
-    penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
-    if grep -q "$id" "$plagiarism_analysis_file"; then
-        plagiarism_penalty["$id"]=$penalty_plagiarism
-    else 
-        plagiarism_penalty["$id"]=0
-    fi
+for id in ${!all_ids[@]}; do
     if [[ $(is_valid_id "$id") -ne 1 ]]; then
         submission_penalty["$id"]=$penalty_submission
     elif [[ -n "${folder_name[$id]}" ]]; then
         fullpath="$working_dir/${folder_name[$id]}"
-        if [[ -n ${issue_case[$id]} ]]; then
-            mv "$fullpath" "$issues_dir"
+        if [[ -n "${issue_case[$id]}" ]]; then
+            if [[ ${issue_case[$id]} -eq 1 || ${issue_case[$id]} -eq 4 ]]; then 
+                mv "$fullpath" "$checked_dir"
+            else 
+                mv "$fullpath" "$issues_dir"
+            fi 
             submission_penalty["$id"]=$penalty_submission
         else
             mv "$fullpath" "$checked_dir"
             submission_penalty["$id"]=0
+        fi
+    else 
+        if [[ -n "${issue_case[$id]}" ]]; then
+            submission_penalty["$id"]=$penalty_submission
         fi
     fi
     if [[ -z ${mismatch_penalty[$id]} ]]; then 
@@ -388,25 +420,54 @@ for id in ${all_ids[@]}; do
     fi 
 done
 
-sorted_ids=$( for i in ${all_ids[@]}; do 
+all_ids_for_csv=()
+
+for id in ${!all_ids[@]}; do 
+    all_ids_for_csv+=("$id")
+done 
+
+for(( id=min_id; id<=max_id; id++ )); do 
+    if [[ -z ${all_ids[$id]} ]]; then
+        all_ids_for_csv+=("$id") 
+    fi 
+done 
+
+sorted_ids=$( for i in ${all_ids_for_csv[@]}; do 
                     echo $i
                 done | sort
                  )
 
-> "marks.csv"
+marks_csv_file="${working_dir}/marks.csv"
 
-echo "id, marks, marks_deducted, total_marks, remarks" > "marks.csv"
+> "$marks_csv_file"
+
+echo "id,marks,marks_deducted,total_marks,remarks" > "$marks_csv_file"
 
 for id in ${sorted_ids[@]}; do
-    marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
-    marks_deducted=$(( ${mismatch_penalty[$id]} + ${submission_penalty[$id]} + ${plagiarism_penalty[$id]} ))
+    if [[ -z ${all_ids[$id]} ]]; then 
+        row="${id},0,0,0,missing_submission " 
+        echo $row >> "$marks_csv_file"
+        continue
+    fi 
+    marks_deducted=$(( ${submission_penalty[$id]} ))
+    if [[ -z ${folder_name[$id]} || ${issue_case[$id]} -eq 3 ]]; then
+        marks=0 
+    else 
+        marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
+    fi  
+    this_total_marks=$(( $marks - $marks_deducted ))
+    remarks=""
     if [[ -n ${issue_case[$id]} ]]; then
-        remarks="issue case#${issue_case[$id]}"
-    else
-        remarks=" "
+        remarks+="issue case #${issue_case[$id]} "
     fi
-    row="${id}, ${marks}, ${marks_deducted}, ${total_marks}, ${remarks}" 
-    echo $row >> "marks.csv"
+    # handling plagiarism
+    penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
+    if grep -q "$id" "$plagiarism_analysis_file"; then
+        this_total_marks=$(( - $penalty_plagiarism ))
+        remarks+="plagiarism detected "
+    fi
+    row="${id},${marks},${marks_deducted},${this_total_marks},${remarks}" 
+    echo $row >> "$marks_csv_file"
 done 
 
 echo "marks.csv written successfully"
