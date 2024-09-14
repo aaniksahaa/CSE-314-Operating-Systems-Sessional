@@ -394,12 +394,16 @@ for id in ${!all_ids[@]}; do
         submission_penalty["$id"]=$penalty_submission
     elif [[ -n "${folder_name[$id]}" ]]; then
         fullpath="$working_dir/${folder_name[$id]}"
-        if [[ -n ${issue_case[$id]} ]]; then
+        if [[ -n "${issue_case[$id]}" ]]; then
             mv "$fullpath" "$issues_dir"
             submission_penalty["$id"]=$penalty_submission
         else
             mv "$fullpath" "$checked_dir"
             submission_penalty["$id"]=0
+        fi
+    else 
+        if [[ -n "${issue_case[$id]}" ]]; then
+            submission_penalty["$id"]=$penalty_submission
         fi
     fi
     if [[ -z ${mismatch_penalty[$id]} ]]; then 
@@ -442,14 +446,13 @@ for id in ${sorted_ids[@]}; do
     marks_deducted=$(( ${submission_penalty[$id]} ))
     if [[ -z ${folder_name[$id]} || ${issue_case[$id]} -eq 3 ]]; then
         marks=0 
-        this_total_marks=0
     else 
         marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
-        this_total_marks=$(( $marks - $marks_deducted ))
     fi  
+    this_total_marks=$(( $marks - $marks_deducted ))
     remarks=""
     if [[ -n ${issue_case[$id]} ]]; then
-        remarks+="issue case#${issue_case[$id]} "
+        remarks+="issue case #${issue_case[$id]} "
     fi
     # handling plagiarism
     penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
