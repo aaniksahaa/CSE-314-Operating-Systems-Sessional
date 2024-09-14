@@ -98,11 +98,22 @@ check_line(){
     done 
 }
 
+########################################
+
+root_dir=$( pwd )
+
+input_dir="${root_dir}/input"
+output_dir="${root_dir}/output"
+
+create_or_clear_directories "$output_dir"
+
+########################################
+
 if [ $# -ne 2 ]; then
     show_usage
 fi
 
-input_file=$2
+input_file="${input_dir}/$2"
 
 check_valid_file $input_file
 
@@ -148,8 +159,10 @@ do
         5)  check_line "penalty_unmatched" "$line" 1 "#"
             penalty_unmatched=$line
             ;;
-        6)  working_dir=$line
+        6)  working_dir="${input_dir}/$line"
             check_valid_dir $working_dir
+            cp -R $working_dir $output_dir
+            working_dir="${output_dir}/$line"
             ;;
         7)  read -a id_range <<< $line 
             check_line "id_range" "$line" 2 "#"
@@ -161,12 +174,12 @@ do
                 exit 1
             fi 
             ;;
-        8)  expected_output_file=$line 
+        8)  expected_output_file="${input_dir}/$line"
             check_valid_file $expected_output_file
             ;;
         9)  check_line "penalty_submission" "$line" 1 "#"
             penalty_submission=$line ;;
-        10) plagiarism_analysis_file=$line 
+        10) plagiarism_analysis_file="${input_dir}/$line" 
             check_valid_file $plagiarism_analysis_file
             ;;
         11) check_line "plagiarism_penalty_pct" "$line" 1 "#"
@@ -375,15 +388,8 @@ done
 ################ prepare penalty values ##################
 
 declare -A submission_penalty
-declare -A plagiarism_penalty
 
 for id in ${!all_ids[@]}; do
-    penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
-    if grep -q "$id" "$plagiarism_analysis_file"; then
-        plagiarism_penalty["$id"]=$penalty_plagiarism
-    else 
-        plagiarism_penalty["$id"]=0
-    fi
     if [[ $(is_valid_id "$id") -ne 1 ]]; then
         submission_penalty["$id"]=$penalty_submission
     elif [[ -n "${folder_name[$id]}" ]]; then
@@ -425,28 +431,33 @@ marks_csv_file="${working_dir}/marks.csv"
 
 > "$marks_csv_file"
 
-echo "id, marks, marks_deducted, total_marks, remarks" > "$marks_csv_file"
+echo "id,marks,marks_deducted,total_marks,remarks" > "$marks_csv_file"
 
 for id in ${sorted_ids[@]}; do
     if [[ -z ${all_ids[$id]} ]]; then 
-        row="${id}, 0, 0, ${total_marks}, missing_submission; " 
+        row="${id},0,0,0,missing_submission " 
         echo $row >> "$marks_csv_file"
         continue
     fi 
+    marks_deducted=$(( ${submission_penalty[$id]} ))
     if [[ -z ${folder_name[$id]} || ${issue_case[$id]} -eq 3 ]]; then
         marks=0 
+        this_total_marks=0
     else 
         marks=$(( $total_marks - ${mismatch_penalty[$id]} ))
-    fi 
-    marks_deducted=$(( ${mismatch_penalty[$id]} + ${submission_penalty[$id]} + ${plagiarism_penalty[$id]} ))
+        this_total_marks=$(( $marks - $marks_deducted ))
+    fi  
     remarks=""
     if [[ -n ${issue_case[$id]} ]]; then
-        remarks+="issue case#${issue_case[$id]}; "
+        remarks+="issue case#${issue_case[$id]} "
     fi
-    if [[ ${plagiarism_penalty[$id]} -gt 0 ]]; then
-        remarks+="plagiarism detected; "
+    # handling plagiarism
+    penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
+    if grep -q "$id" "$plagiarism_analysis_file"; then
+        this_total_marks=$(( - $penalty_plagiarism ))
+        remarks+="plagiarism detected "
     fi
-    row="${id}, ${marks}, ${marks_deducted}, ${total_marks}, ${remarks}" 
+    row="${id},${marks},${marks_deducted},${this_total_marks},${remarks}" 
     echo $row >> "$marks_csv_file"
 done 
 
