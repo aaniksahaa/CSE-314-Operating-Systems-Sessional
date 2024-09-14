@@ -1,1 +1,1 @@
-./2005001.sh -i input.txt
+./2005001.sh -i sample_input.txt

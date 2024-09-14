@@ -10,13 +10,6 @@ create_or_clear_directories(){
     done
 }
 
-issues_dir="issues"
-checked_dir="checked"
-
-create_or_clear_directories "$issues_dir" "$checked_dir"
-
-##############################################
-
 show_usage(){
     echo "Invalid command line arguments"
     echo "Usage: <script_name.sh> -i <input_filepath>"
@@ -130,8 +123,12 @@ do
         1)  check_line "use_archived" "$line" 1 "true false"
             use_archived=$line
             ;;
-        2)  check_line "allowed_archive_formats" "$line" 0 "zip rar tar"
-            read -a allowed_archive_formats <<< $line
+        2)  if [[ "$use_archived" == "true" ]]; then 
+                check_line "allowed_archive_formats" "$line" 0 "zip rar tar"
+                read -a allowed_archive_formats <<< $line
+            else 
+                allowed_archive_formats=()
+            fi 
             ;;
         3)  check_line "allowed_programming_languages" "$line" 0 "c cpp python sh"
             read -a allowed_programming_languages <<< $line
@@ -190,6 +187,15 @@ fi
 
 ########## parsing end ############
 
+##############################################
+
+issues_dir="${working_dir}/issues"
+checked_dir="${working_dir}/checked"
+
+create_or_clear_directories "$issues_dir" "$checked_dir"
+
+##############################################
+
 temp_dir="$working_dir/temp"
 mkdir -p $temp_dir
 
@@ -244,7 +250,7 @@ is_valid_language(){
 
 working_dir_listing=`ls $working_dir`
 
-all_ids=()
+declare -A all_ids
 declare -A folder_name
 declare -A issue_case 
 
@@ -252,11 +258,11 @@ for f in $working_dir_listing; do
     fullpath="$working_dir/$f"
     if [[ -d $fullpath ]]; then 
         if [[ "$(is_valid_id $f)" -eq 1 ]]; then
-            all_ids+=("$f") 
+            all_ids["$f"]="true"
             folder_name["$f"]="$f"
             issue_case["$f"]=1
         elif [[ "$(is_numeric $f)" -eq 1 ]]; then
-            all_ids+=("$f")
+            all_ids["$f"]="true"
             issue_case["$f"]=5
             mv "$fullpath" "$issues_dir"
         fi 
@@ -266,7 +272,7 @@ for f in $working_dir_listing; do
             extension=""
         fi 
         if [[ "$(is_numeric $name)" -eq 1 ]]; then 
-            all_ids+=("$name")
+            all_ids["$name"]="true"
             if [[ $(is_archive_format $extension) -eq 1 ]]; then
                 rm -rf "$temp_dir"/*
                 case $extension in 
@@ -324,7 +330,7 @@ for id in ${!folder_name[@]}; do
         if [[ "$name" == "$extension" ]]; then 
             extension=""
         fi
-        if [[ $(is_valid_language $extension) -eq 1 ]]; then
+        if [[ "$name" == "$id" && $(is_valid_language $extension) -eq 1 ]]; then
             found=1
             target_file="$f"
             break
@@ -371,7 +377,7 @@ done
 declare -A submission_penalty
 declare -A plagiarism_penalty
 
-for id in ${all_ids[@]}; do
+for id in ${!all_ids[@]}; do
     penalty_plagiarism=$(( ( $total_marks * $plagiarism_penalty_pct ) / 100 ))
     if grep -q "$id" "$plagiarism_analysis_file"; then
         plagiarism_penalty["$id"]=$penalty_plagiarism
@@ -398,16 +404,35 @@ for id in ${all_ids[@]}; do
     fi 
 done
 
-sorted_ids=$( for i in ${all_ids[@]}; do 
+all_ids_for_csv=()
+
+for id in ${!all_ids[@]}; do 
+    all_ids_for_csv+=("$id")
+done 
+
+for(( id=min_id; id<=max_id; id++ )); do 
+    if [[ -z ${all_ids[$id]} ]]; then
+        all_ids_for_csv+=("$id") 
+    fi 
+done 
+
+sorted_ids=$( for i in ${all_ids_for_csv[@]}; do 
                     echo $i
                 done | sort
                  )
 
-> "marks.csv"
+marks_csv_file="${working_dir}/marks.csv"
 
-echo "id, marks, marks_deducted, total_marks, remarks" > "marks.csv"
+> "$marks_csv_file"
+
+echo "id, marks, marks_deducted, total_marks, remarks" > "$marks_csv_file"
 
 for id in ${sorted_ids[@]}; do
+    if [[ -z ${all_ids[$id]} ]]; then 
+        row="${id}, 0, 0, ${total_marks}, missing_submission; " 
+        echo $row >> "$marks_csv_file"
+        continue
+    fi 
     if [[ -z ${folder_name[$id]} || ${issue_case[$id]} -eq 3 ]]; then
         marks=0 
     else 
@@ -422,7 +447,7 @@ for id in ${sorted_ids[@]}; do
         remarks+="plagiarism detected; "
     fi
     row="${id}, ${marks}, ${marks_deducted}, ${total_marks}, ${remarks}" 
-    echo $row >> "marks.csv"
+    echo $row >> "$marks_csv_file"
 done 
 
 echo "marks.csv written successfully"
