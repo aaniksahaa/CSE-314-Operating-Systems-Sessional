@@ -299,11 +299,13 @@ for f in $working_dir_listing; do
                 created_folder=$( ls $temp_dir | head -n1 )
                 if [[ "$created_folder" != "$name" ]]; then 
                     issue_case["$name"]=4
+                    mv "$temp_dir/$created_folder" "$temp_dir/$name"
+                    created_folder="$name" 
                 fi 
                 if [[ "$(is_valid_id $name)" -eq 1 ]]; then 
                     if [[ $(is_valid_archive_format $extension) -ne 1 ]]; then
                         issue_case["$name"]=2
-                        mv "$temp_dir/$created_folder" "$issues_dir"
+                        # mv "$temp_dir/$created_folder" "$issues_dir"
                     else 
                         folder_name["$name"]="$created_folder"
                         rm -rf "$working_dir/$created_folder"
@@ -395,7 +397,11 @@ for id in ${!all_ids[@]}; do
     elif [[ -n "${folder_name[$id]}" ]]; then
         fullpath="$working_dir/${folder_name[$id]}"
         if [[ -n "${issue_case[$id]}" ]]; then
-            mv "$fullpath" "$issues_dir"
+            if [[ ${issue_case[$id]} -eq 1 || ${issue_case[$id]} -eq 4 ]]; then 
+                mv "$fullpath" "$checked_dir"
+            else 
+                mv "$fullpath" "$issues_dir"
+            fi 
             submission_penalty["$id"]=$penalty_submission
         else
             mv "$fullpath" "$checked_dir"

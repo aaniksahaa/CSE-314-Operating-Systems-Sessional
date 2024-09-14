@@ -1,6 +1,6 @@
-true
-zip
-c cpp
+false
+zip rar
+c cpp python
 100
 5
 submissions
