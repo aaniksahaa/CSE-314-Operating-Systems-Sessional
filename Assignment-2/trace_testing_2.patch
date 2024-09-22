@@ -1,0 +1,179 @@
+diff --git a/Makefile b/Makefile
+index 62fd0f8..9363c8d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -139,6 +139,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_trace\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..01e7987 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -92,6 +92,8 @@ struct proc {
+   int xstate;                  // Exit status to be returned to parent's wait
+   int pid;                     // Process ID
+ 
++  int tracenum;                // Number of syscall to be traced
++
+   // wait_lock must be held when using this:
+   struct proc *parent;         // Parent process
+ 
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..c620107 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,33 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_trace(void);
++
++char* syscall_names[] = {
++    [SYS_fork]    "fork",
++    [SYS_exit]    "exit",
++    [SYS_wait]    "wait",
++    [SYS_pipe]    "pipe",
++    [SYS_read]    "read",
++    [SYS_kill]    "kill",
++    [SYS_exec]    "exec",
++    [SYS_fstat]   "fstat",
++    [SYS_chdir]   "chdir",
++    [SYS_dup]     "dup",
++    [SYS_getpid]  "getpid",
++    [SYS_sbrk]    "sbrk",
++    [SYS_sleep]   "sleep",
++    [SYS_uptime]  "uptime",
++    [SYS_open]    "open",
++    [SYS_write]   "write",
++    [SYS_mknod]   "mknod",
++    [SYS_unlink]  "unlink",
++    [SYS_link]    "link",
++    [SYS_mkdir]   "mkdir",
++    [SYS_close]   "close",
++    [SYS_trace]   "trace",
++};
++
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +153,7 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_trace]   sys_trace,
+ };
+ 
+ void
+@@ -138,7 +166,16 @@ syscall(void)
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+     // Use num to lookup the system call function for num, call it,
+     // and store its return value in p->trapframe->a0
++
+     p->trapframe->a0 = syscalls[num]();
++
++    if(num == p->tracenum){
++      int pid = p->pid;
++      char*syscall_name = syscall_names[num];
++      int return_value = p->trapframe->a0;
++      printf("pid: %d, syscall: %s, return: %d", pid, syscall_name, return_value);
++    }
++
+   } else {
+     printf("%d %s: unknown sys call %d\n",
+             p->pid, p->name, num);
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..cc112b9 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,4 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_trace  22
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..10c9622 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -91,3 +91,20 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++// traces a specific system call over all processes
++uint64
++sys_trace(void)
++{
++  int num;
++  argint(0, &num);
++
++  struct proc* curr_proc = myproc();
++
++  acquire(&curr_proc->lock);
++  curr_proc->tracenum = num;  // set the property in the struct of proc
++  release(&curr_proc->lock);
++
++  // signal that tracing is successfully enabled
++  return 0;
++}
+diff --git a/user/trace.c b/user/trace.c
+new file mode 100644
+index 0000000..f59468a
+--- /dev/null
++++ b/user/trace.c
+@@ -0,0 +1,29 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main(int argc, char *argv[])
++{
++    int i;
++    char *nargv[MAXARG];
++
++    if (argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9'))
++    {
++        fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
++        exit(1);
++    }
++
++    if (trace(atoi(argv[1])) < 0)
++    {
++        fprintf(2, "%s: trace failed\n", argv[0]);
++        exit(1);
++    }
++
++    for (i = 2; i < argc && i < MAXARG; i++)
++    {
++        nargv[i - 2] = argv[i];
++    }
++    exec(nargv[0], nargv);
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 04013ca..901b55e 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,7 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int trace(int);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..9c97b05 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,4 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("trace");
