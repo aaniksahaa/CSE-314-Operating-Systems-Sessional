@@ -1,0 +1,380 @@
+diff --git a/Makefile b/Makefile
+index 62fd0f8..c4dae69 100644
+--- a/Makefile
++++ b/Makefile
+@@ -139,6 +139,8 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_trace\
++	$U/_load\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/param.h b/kernel/param.h
+index 6624bff..7c04274 100644
+--- a/kernel/param.h
++++ b/kernel/param.h
+@@ -11,3 +11,6 @@
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+ #define FSSIZE       2000  // size of file system in blocks
+ #define MAXPATH      128   // maximum file path name
++
++#define MAXSTRARGLEN       128     // keeping same as MAXPATH
++#define MAXSYSCALLARG   6       // since trapframe has a0-a5
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 58a8a0b..b293ff3 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -146,6 +146,8 @@ found:
+   p->context.ra = (uint64)forkret;
+   p->context.sp = p->kstack + PGSIZE;
+ 
++  p->tracenum = -1;
++
+   return p;
+ }
+ 
+@@ -169,6 +171,8 @@ freeproc(struct proc *p)
+   p->killed = 0;
+   p->xstate = 0;
+   p->state = UNUSED;
++
++  p->tracenum = -1;
+ }
+ 
+ // Create a user page table for a given process, with no user memory,
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..009c23f 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -80,6 +80,7 @@ struct trapframe {
+ };
+ 
+ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
++enum syscall_argtype { EMPTY, INT, STR, ADDR };
+ 
+ // Per-process state
+ struct proc {
+@@ -104,4 +105,22 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++  // anik
++
++  int tracenum;                // Number of syscall to be traced
++
++  enum syscall_argtype argtypes[MAXSYSCALLARG];
++
++  int intargs[MAXSYSCALLARG];
++  char strargs[MAXSYSCALLARG][MAXSTRARGLEN];
++  uint64 addrargs[MAXSYSCALLARG];
++
++};
++
++struct procInfo {
++  int activeProcess;  // # of processes in RUNNABLE and RUNNING state
++  int totalProcess;   // # of total possible processes
++  int memsize;        // in bytes; summation of all active process
++  int totalMemSize;   // in bytes; all available physical Memory
+ };
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..a5528d2 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -57,6 +57,14 @@ void
+ argint(int n, int *ip)
+ {
+   *ip = argraw(n);
++
++  struct proc *p = myproc();
++  int num = p->trapframe->a7;
++  if(num == p->tracenum){
++    p->argtypes[n] = INT;
++    p->intargs[n] = *ip;
++  }
++  
+ }
+ 
+ // Retrieve an argument as a pointer.
+@@ -66,6 +74,14 @@ void
+ argaddr(int n, uint64 *ip)
+ {
+   *ip = argraw(n);
++
++  struct proc *p = myproc();
++  int num = p->trapframe->a7;
++  if(num == p->tracenum){
++    p->argtypes[n] = ADDR;
++    p->addrargs[n] = *ip;
++  }
++
+ }
+ 
+ // Fetch the nth word-sized system call argument as a null-terminated string.
+@@ -76,7 +92,17 @@ argstr(int n, char *buf, int max)
+ {
+   uint64 addr;
+   argaddr(n, &addr);
+-  return fetchstr(addr, buf, max);
++  int ret = fetchstr(addr, buf, max);
++
++  struct proc *p = myproc();
++  int num = p->trapframe->a7;
++  if(num == p->tracenum){
++    p->argtypes[n] = STR;
++    safestrcpy(p->strargs[n], buf, max);
++  }
++
++  return ret;
++
+ }
+ 
+ // Prototypes for the functions that handle system calls.
+@@ -101,6 +127,35 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_trace(void);
++extern uint64 sys_info(void);
++
++char* syscall_names[] = {
++    [SYS_fork]    "fork",
++    [SYS_exit]    "exit",
++    [SYS_wait]    "wait",
++    [SYS_pipe]    "pipe",
++    [SYS_read]    "read",
++    [SYS_kill]    "kill",
++    [SYS_exec]    "exec",
++    [SYS_fstat]   "fstat",
++    [SYS_chdir]   "chdir",
++    [SYS_dup]     "dup",
++    [SYS_getpid]  "getpid",
++    [SYS_sbrk]    "sbrk",
++    [SYS_sleep]   "sleep",
++    [SYS_uptime]  "uptime",
++    [SYS_open]    "open",
++    [SYS_write]   "write",
++    [SYS_mknod]   "mknod",
++    [SYS_unlink]  "unlink",
++    [SYS_link]    "link",
++    [SYS_mkdir]   "mkdir",
++    [SYS_close]   "close",
++    [SYS_trace]   "trace",
++    [SYS_info]    "info",
++};
++
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +181,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_trace]   sys_trace,
++[SYS_info]    sys_info,
+ };
+ 
+ void
+@@ -138,7 +195,57 @@ syscall(void)
+   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
+     // Use num to lookup the system call function for num, call it,
+     // and store its return value in p->trapframe->a0
++
++    int istraced = num == p->tracenum;
++
++    int i;
++    for(i=0; i<MAXSYSCALLARG; i++){
++      p->argtypes[i] = EMPTY;   // at the beginning of each syscall, first empty the argtypes...
++    }
++
+     p->trapframe->a0 = syscalls[num]();
++
++    if(istraced){
++      acquire(&p->lock);
++      int pid = p->pid;
++      release(&p->lock);
++
++      char*syscall_name = syscall_names[num];
++
++      int return_value = p->trapframe->a0;
++
++      printf("pid: %d, syscall: %s, args:(", pid, syscall_name);
++
++      int args_ended = 0;
++
++      for(i=0; i<MAXSYSCALLARG; i++){
++        switch (p->argtypes[i])
++        {
++          case INT:
++            printf("%d", p->intargs[i]);
++            break;
++          case ADDR:
++            printf("%p", (void *)p->addrargs[i]);
++            break;
++          case STR:
++            printf("%s", p->strargs[i]);
++            break;
++          default:
++            args_ended = 1;
++            break;
++        }
++        if(args_ended == 1){
++          break;
++        } else {
++          if((i < MAXSYSCALLARG-1) && (p->argtypes[i+1] != EMPTY)){
++            printf(", ");
++          }
++        }
++      }
++
++      printf("), return: %d\n", return_value);
++    }
++
+   } else {
+     printf("%d %s: unknown sys call %d\n",
+             p->pid, p->name, num);
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..f11b0ee 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_trace  22
++#define SYS_info   23
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..f0ff62e 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -91,3 +91,56 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++// traces a specific system call over all processes
++uint64
++sys_trace(void)
++{
++  int num;
++  argint(0, &num);
++
++  struct proc* curr_proc = myproc();
++
++  acquire(&curr_proc->lock);
++  curr_proc->tracenum = num;  // set the property in the struct of proc
++  release(&curr_proc->lock);
++
++  // signal that tracing is successfully enabled
++  return 0;
++}
++
++
++uint64
++sys_info(void)
++{
++  uint64 addr;
++  argaddr(0, &addr);
++
++  struct procInfo pinfo = {
++    .activeProcess = 0,
++    .totalProcess = 0,
++    .memsize = 0,
++    .totalMemSize = 0
++  };
++
++  struct proc *p;
++  extern struct proc proc[NPROC];
++  for(p = proc; p < &proc[NPROC]; p++){
++    acquire(&p->lock);
++    enum procstate pstate = p->state;
++    release(&p->lock);
++    if(pstate == RUNNABLE || pstate == RUNNING){
++      pinfo.memsize += p->sz;
++      pinfo.activeProcess++;
++    }
++  }
++
++  pinfo.totalProcess = NPROC;
++  pinfo.totalMemSize = PHYSTOP - KERNBASE;
++
++  if(copyout(myproc()->pagetable, addr, (char *)&pinfo, sizeof(pinfo)) < 0){
++    return -1;
++  }
++
++  return 0;
++}
+diff --git a/user/trace.c b/user/trace.c
+new file mode 100644
+index 0000000..f59468a
+--- /dev/null
++++ b/user/trace.c
+@@ -0,0 +1,29 @@
++#include "kernel/param.h"
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main(int argc, char *argv[])
++{
++    int i;
++    char *nargv[MAXARG];
++
++    if (argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9'))
++    {
++        fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
++        exit(1);
++    }
++
++    if (trace(atoi(argv[1])) < 0)
++    {
++        fprintf(2, "%s: trace failed\n", argv[0]);
++        exit(1);
++    }
++
++    for (i = 2; i < argc && i < MAXARG; i++)
++    {
++        nargv[i - 2] = argv[i];
++    }
++    exec(nargv[0], nargv);
++    exit(0);
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 04013ca..ddacb10 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -1,5 +1,12 @@
+ struct stat;
+ 
++struct procInfo {
++    int activeProcess;  // # of processes in RUNNABLE and RUNNING state
++    int totalProcess;   // # of total possible processes
++    int memsize;        // in bytes; summation of all active process
++    int totalMemSize;   // in bytes; all available physical Memory
++};
++
+ // system calls
+ int fork(void);
+ int exit(int) __attribute__((noreturn));
+@@ -22,6 +29,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int trace(int);
++int info(struct procInfo*);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..8af2b91 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("trace");
++entry("info");
