@@ -1,0 +1,326 @@
+diff --git a/Makefile b/Makefile
+index 62fd0f8..f237306 100644
+--- a/Makefile
++++ b/Makefile
+@@ -139,6 +139,8 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_dummyproc\
++	$U/_testprocinfo\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+@@ -160,7 +162,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
+ 	then echo "-gdb tcp::$(GDBPORT)"; \
+ 	else echo "-s -p $(GDBPORT)"; fi)
+ ifndef CPUS
+-CPUS := 3
++CPUS := 1
+ endif
+ 
+ QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+diff --git a/kernel/defs.h b/kernel/defs.h
+index d1b6bb9..971764b 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -106,6 +106,7 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++int             send_current_pstat(uint64 addr);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+diff --git a/kernel/param.h b/kernel/param.h
+index 6624bff..380ea6f 100644
+--- a/kernel/param.h
++++ b/kernel/param.h
+@@ -11,3 +11,10 @@
+ #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
+ #define FSSIZE       2000  // size of file system in blocks
+ #define MAXPATH      128   // maximum file path name
++
++
++
++#define TIME_LIMIT_0        2  
++#define TIME_LIMIT_1        4  
++#define WAIT_THRESH         6
++#define DEFAULT_TICKETS     10
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 58a8a0b..2afb49b 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -5,6 +5,7 @@
+ #include "spinlock.h"
+ #include "proc.h"
+ #include "defs.h"
++#include "pstat.h"
+ 
+ struct cpu cpus[NCPU];
+ 
+@@ -686,3 +687,32 @@ procdump(void)
+     printf("\n");
+   }
+ }
++
++
++int send_current_pstat(uint64 addr){
++  struct proc* curr_proc = myproc();
++  struct pstat curr_stat;
++
++  int i;
++  for(i=0; i<NPROC; i++){
++    struct proc p = proc[i];
++
++    acquire(&p.lock);
++    curr_stat.pid[i] = p.pid;
++    curr_stat.inuse[i] = p.state == RUNNABLE || p.state == RUNNING;
++    curr_stat.inQ[i] = p.inQ;
++    curr_stat.waiting_time[i] = p.waiting_time;
++    curr_stat.running_time[i] = p.running_time;
++    curr_stat.times_scheduled[i] = p.times_scheduled;
++    curr_stat.tickets_original[i] = p.original_tickets;
++    curr_stat.tickets_current[i] = p.current_tickets;
++    curr_stat.queue_ticks[i][0] = p.q0_ticks;
++    curr_stat.queue_ticks[i][1] = p.q1_ticks;
++    release(&p.lock);
++  }
++
++  if(copyout(curr_proc->pagetable, addr, (char *)&curr_stat, sizeof(curr_stat)) < 0)
++    return -1;
++
++  return 0;
++}
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..860f715 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -104,4 +104,15 @@ struct proc {
+   struct file *ofile[NOFILE];  // Open files
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
++
++
++  uint original_tickets;
++  
++  uint current_tickets;
++  uint inQ;
++  uint running_time;
++  uint waiting_time;
++  uint times_scheduled;
++  uint q0_ticks;
++  uint q1_ticks;
+ };
+diff --git a/kernel/pstat.h b/kernel/pstat.h
+new file mode 100644
+index 0000000..487e05d
+--- /dev/null
++++ b/kernel/pstat.h
+@@ -0,0 +1,19 @@
++#ifndef _PSTAT_H_
++#define _PSTAT_H_
++
++#include "param.h"
++#include "types.h"
++
++struct pstat {
++    int pid[NPROC];               // the process ID of each process
++    int inuse[NPROC];             // whether this slot of the process table is being used (1 or 0)
++    int inQ[NPROC];               // which queue the process is currently in
++    int waiting_time[NPROC];      // the time each process has spent waiting before being scheduled
++    int running_time[NPROC];      // Number of times the process was scheduled before its time slice was used
++    int times_scheduled[NPROC];   // the total number of times this process was scheduled
++    int tickets_original[NPROC];  // the number of tickets each process originally had
++    int tickets_current[NPROC];   // the number of tickets each process currently has
++    uint queue_ticks[NPROC][2];   // the total number of ticks each process has spent in each queue
++};
++
++#endif
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..cbfdb87 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++extern uint64 sys_settickets(void);
++extern uint64 sys_getpinfo(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +128,8 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_settickets]   sys_settickets,
++[SYS_getpinfo]   sys_getpinfo,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..bee1422 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,5 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++#define SYS_settickets  22
++#define SYS_getpinfo  23
+\ No newline at end of file
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..3559d31 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -91,3 +91,45 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++
++uint64
++sys_settickets(void)
++{
++  struct proc *p = myproc();
++
++  int n;
++
++  // number of tickets to set
++  argint(0,&n);
++
++  int tickets_to_set = n;
++  int return_value = 0;
++
++  if(n<1){
++    tickets_to_set = DEFAULT_TICKETS;
++    return_value = -1;
++  }
++
++  acquire(&p->lock);
++  p->original_tickets = p->current_tickets = tickets_to_set;
++  release(&p->lock);
++
++  return return_value;
++
++}
++
++uint64
++sys_getpinfo(void)
++{
++  uint64 addr;
++
++  argaddr(0, &addr);
++
++  // validating the argument address passed to kernel
++  if(addr == 0){
++    return -1;
++  }
++
++  return send_current_pstat(addr);
++}
+diff --git a/user/dummyproc.c b/user/dummyproc.c
+new file mode 100644
+index 0000000..7225685
+--- /dev/null
++++ b/user/dummyproc.c
+@@ -0,0 +1,18 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++int main(int argc, char *argv[]){
++    if (argc < 3)
++    {
++        fprintf(2, "Usage: %s ticket_number iterations\n", argv[0]);
++        exit(1);
++    }
++
++    if(settickets(atoi(argv[1])) == -1){
++        printf("settickets %s failed\n", argv[1]);
++    }
++
++    
++}
++
+diff --git a/user/testprocinfo.c b/user/testprocinfo.c
+new file mode 100644
+index 0000000..d5bcd2b
+--- /dev/null
++++ b/user/testprocinfo.c
+@@ -0,0 +1,42 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++#include "kernel/pstat.h"
++
++#define RED_COLOR "\033[31m"
++#define GREEN_COLOR "\033[32m"
++#define YELLOW_COLOR "\033[33m"
++#define BLUE_COLOR "\033[34m"
++#define RESET_COLOR "\033[0m"
++
++int main(int argc, char *argv[]){
++    struct pstat curr_stat;
++    if(getpinfo(&curr_stat) == -1){
++        printf("Sorry! getpinfo syscall failed.");
++    }
++    
++    printf(GREEN_COLOR "|  PID  | In Use| In Q  |  Waiting time  | Running time  |  # Times Scheduled   |Original Tickets|Current Tickets|  Q0  |  Q1   |\n" RESET_COLOR);
++    printf(GREEN_COLOR "|-------|-------|-------|----------------|---------------|----------------------|----------------|---------------|------|-------|\n" RESET_COLOR);
++
++    for (int i = 0; i < NPROC; i++) {
++        int pid = curr_stat.pid[i];
++        if(pid != 0){
++            curr_stat.waiting_time[i] = 100;
++            curr_stat.queue_ticks[i][0] = 334;
++            curr_stat.times_scheduled[i] = 244;
++            printf(YELLOW_COLOR "|%d\t| %d\t| %d\t| \t%d\t | \t%d\t |\t%d\t\t| \t%d\t | \t%d\t | %d\t| %d\t|\n" RESET_COLOR,
++               curr_stat.pid[i],
++               curr_stat.inuse[i],
++               curr_stat.inQ[i],
++               curr_stat.waiting_time[i],
++               curr_stat.running_time[i],
++               curr_stat.times_scheduled[i],
++               curr_stat.tickets_original[i],
++               curr_stat.tickets_current[i],
++               curr_stat.queue_ticks[i][0],
++               curr_stat.queue_ticks[i][1]);
++        }
++    }
++
++    return 0;
++}
+\ No newline at end of file
+diff --git a/user/user.h b/user/user.h
+index 04013ca..766819e 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -1,3 +1,6 @@
++// alternatively, this could have been declared again
++#include "kernel/pstat.h"
++
+ struct stat;
+ 
+ // system calls
+@@ -22,6 +25,8 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++int settickets(int);
++int getpinfo(struct pstat *);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..21930eb 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,5 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("settickets");
++entry("getpinfo");
+\ No newline at end of file

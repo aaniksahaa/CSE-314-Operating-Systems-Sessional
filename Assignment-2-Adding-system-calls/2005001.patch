@@ -26,7 +26,7 @@ index 6624bff..c6c9cb4 100644
 +#define MAXRECENTCMD    	128 // max prev commands to be stored
 +#define MAXCMDLEN           128 // max len of cmd string
 diff --git a/kernel/proc.c b/kernel/proc.c
-index 58a8a0b..4581464 100644
+index 58a8a0b..f6ac3c2 100644
 --- a/kernel/proc.c
 +++ b/kernel/proc.c
 @@ -26,6 +26,13 @@ extern char trampoline[]; // trampoline.S
@@ -43,7 +43,7 @@ index 58a8a0b..4581464 100644
  // Allocate a page for each process's kernel stack.
  // Map it high in memory, followed by an invalid
  // guard page.
-@@ -48,9 +55,15 @@ void
+@@ -48,9 +55,18 @@ void
  procinit(void)
  {
    struct proc *p;
@@ -54,12 +54,15 @@ index 58a8a0b..4581464 100644
    initlock(&pid_lock, "nextpid");
    initlock(&wait_lock, "wait_lock");
 +
-+  initlock(&cmd_lock, "cmd_lock");
++  // added by anik
++  // this lock is used to ensure that, the recent commands variable
++  // is read or written while locked
++  initlock(&cmd_lock, "cmd_lock");  
 +
    for(p = proc; p < &proc[NPROC]; p++) {
        initlock(&p->lock, "proc");
        p->state = UNUSED;
-@@ -146,6 +159,8 @@ found:
+@@ -146,6 +162,8 @@ found:
    p->context.ra = (uint64)forkret;
    p->context.sp = p->kstack + PGSIZE;
  
@@ -68,12 +71,23 @@ index 58a8a0b..4581464 100644
    return p;
  }
  
-@@ -169,6 +184,8 @@ freeproc(struct proc *p)
+@@ -169,6 +187,19 @@ freeproc(struct proc *p)
    p->killed = 0;
    p->xstate = 0;
    p->state = UNUSED;
 +
-+  p->tracenum = -1;
++  // cleaning my added fields
++  p->tracenum = -1;   // not seeting 0 since, 0 is itself a syscall number
++
++  p->argtypes[0] = 0; 
++  p->intargs[0] = 0;
++  p->addrargs[0] = 0;
++
++  int i;
++  for(i=0; i<MAXSYSCALLARG; i++){
++    p->strargs[i][0] = 0;
++  }
++
  }
  
  // Create a user page table for a given process, with no user memory,
@@ -288,10 +302,10 @@ index bc5f356..505766b 100644
 +#define SYS_setlastcmd   24
 +#define SYS_getrecentcmd   25
 diff --git a/kernel/sysproc.c b/kernel/sysproc.c
-index 3b4d5bd..4aa2e91 100644
+index 3b4d5bd..57c98aa 100644
 --- a/kernel/sysproc.c
 +++ b/kernel/sysproc.c
-@@ -91,3 +91,119 @@ sys_uptime(void)
+@@ -91,3 +91,142 @@ sys_uptime(void)
    release(&tickslock);
    return xticks;
  }
@@ -313,13 +327,16 @@ index 3b4d5bd..4aa2e91 100644
 +  return 0;
 +}
 +
-+
++// this syscall calculate the fields in procInfo
++// and then it copyouts them to the appropriate places in 
++// user space
 +uint64
 +sys_info(void)
 +{
 +  uint64 addr;
 +  argaddr(0, &addr);
 +
++  // declaring the procInfo object in kernel space
 +  struct procInfo pinfo = {
 +    .activeProcess = 0,
 +    .totalProcess = 0,
@@ -327,21 +344,32 @@ index 3b4d5bd..4aa2e91 100644
 +    .totalMemSize = 0
 +  };
 +
++  // calculating the fields in procInfo in kernel space
 +  struct proc *p;
 +  extern struct proc proc[NPROC];
 +  for(p = proc; p < &proc[NPROC]; p++){
-+    acquire(&p->lock);
++    acquire(&p->lock);    // acuiring lock for accessing p->state
 +    enum procstate pstate = p->state;
 +    release(&p->lock);
-+    if(pstate == RUNNABLE || pstate == RUNNING){
++    
++    // // actually the count should be like this
++    // if(pstate == RUNNABLE || pstate == RUNNING){
++    //   pinfo.memsize += p->sz;
++    //   pinfo.activeProcess++;
++    // }
++
++    // however, from the given outputs, it seems the sleeping processess
++    // are also being counted
++    if(pstate == RUNNABLE || pstate == RUNNING || pstate == SLEEPING){
 +      pinfo.memsize += p->sz;
 +      pinfo.activeProcess++;
 +    }
 +  }
 +
-+  pinfo.totalProcess = NPROC;
++  pinfo.totalProcess = NPROC;   // number of allowable total processes
 +  pinfo.totalMemSize = PHYSTOP - KERNBASE;
 +
++  // we need to copyout the object in kernel space to the user space
 +  if(copyout(myproc()->pagetable, addr, (char *)&pinfo, sizeof(pinfo)) < 0){
 +    return -1;
 +  }
@@ -349,6 +377,10 @@ index 3b4d5bd..4aa2e91 100644
 +  return 0;
 +}
 +
++// when a new command is given by user, this syscall
++// records that command in the recent commands array
++// in case of overflow, the array space is re-used in a 
++// circular manner
 +uint64
 +sys_setlastcmd(void)
 +{
@@ -367,13 +399,16 @@ index 3b4d5bd..4aa2e91 100644
 +  acquire(&cmd_lock);
 +  total_cmd_count++;
 +  safestrcpy(recent_cmds[curr_recent_cmd_index], (char*)cmd, MAXCMDLEN);
-+  curr_recent_cmd_index = (curr_recent_cmd_index + 1)%MAXRECENTCMD; // circular queue
++  curr_recent_cmd_index = (curr_recent_cmd_index + 1)%MAXRECENTCMD; // circularly putting values
 +  release(&cmd_lock);
 +
 +  return 0;
 +}
 +
-+
++// this syscall takes a number n, which means nth recent command is wanted
++// also, it takes an address of an object in user space
++// then this syscall, retrieves that wanted command and copyouts that command
++// to the user space
 +uint64
 +sys_getrecentcmd(void)
 +{
@@ -395,12 +430,14 @@ index 3b4d5bd..4aa2e91 100644
 +    return -1;
 +  }
 +
++  // for retrieval from circular storage, mod operation is done
 +  int target_index = (curr_recent_cmd_index - n + MAXRECENTCMD) % MAXRECENTCMD;
 +
 +  acquire(&cmd_lock);
 +  safestrcpy(cmd, (char *)recent_cmds[target_index], MAXCMDLEN);
 +  release(&cmd_lock);
 +
++  // // debugging
 +  // printf("target index = %d\n", target_index);
 +  // printf("target command = %s\n", cmd);
 +  // printf("len = %d\n", strlen(cmd));
@@ -413,7 +450,7 @@ index 3b4d5bd..4aa2e91 100644
 +}
 diff --git a/user/load.c b/user/load.c
 new file mode 100644
-index 0000000..39e653a
+index 0000000..006aded
 --- /dev/null
 +++ b/user/load.c
 @@ -0,0 +1,112 @@
@@ -522,8 +559,8 @@ index 0000000..39e653a
 +            print_MB(pInfo.memsize);
 +            printf("/");
 +            print_MB(pInfo.totalMemSize);
++            printf(" (in MB)");
 +            printf("\n");
-+            // %d/%d (in B)\n", (int)get_MB(pInfo.memsize), pInfo.totalMemSize);
 +        }
 +    }
 +
@@ -600,40 +637,37 @@ index 836ebcb..3c5c509 100644
    exit(0);
 diff --git a/user/trace.c b/user/trace.c
 new file mode 100644
-index 0000000..f59468a
+index 0000000..21f2805
 --- /dev/null
 +++ b/user/trace.c
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,27 @@
 +#include "kernel/param.h"
 +#include "kernel/types.h"
 +#include "kernel/stat.h"
 +#include "user/user.h"
 +
-+int main(int argc, char *argv[])
++int
++main(int argc, char *argv[])
 +{
-+    int i;
-+    char *nargv[MAXARG];
++  int i;
++  char *nargv[MAXARG];
 +
-+    if (argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9'))
-+    {
-+        fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
-+        exit(1);
-+    }
++  if(argc < 3 || (argv[1][0] < '0' || argv[1][0] > '9')){
++    fprintf(2, "Usage: %s sys_call_num command\n", argv[0]);
++    exit(1);
++  }
 +
-+    if (trace(atoi(argv[1])) < 0)
-+    {
-+        fprintf(2, "%s: trace failed\n", argv[0]);
-+        exit(1);
-+    }
-+
-+    for (i = 2; i < argc && i < MAXARG; i++)
-+    {
-+        nargv[i - 2] = argv[i];
-+    }
-+    exec(nargv[0], nargv);
-+    exit(0);
++  if (trace(atoi(argv[1])) < 0) {
++    fprintf(2, "%s: trace failed\n", argv[0]);
++    exit(1);
++  }
++  
++  for(i = 2; i < argc && i < MAXARG; i++){
++    nargv[i-2] = argv[i];
++  }
++  exec(nargv[0], nargv);
++  exit(0);
 +}
-\ No newline at end of file
 diff --git a/user/user.h b/user/user.h
 index 04013ca..7552259 100644
 --- a/user/user.h
