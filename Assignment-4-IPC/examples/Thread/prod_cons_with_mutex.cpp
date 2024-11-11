@@ -1,8 +1,16 @@
 #include<stdio.h>
+#include<iostream>
 #include<pthread.h>
 #include<semaphore.h>
 #include<queue>
+#include <unistd.h>
+#include<ctime>
+
 using namespace std;
+
+#define NUM_STAIR_STEPS 3
+#define GALLERY_1_MAX 5
+
 
 
 //semaphore to control sleep and wake up
@@ -20,20 +28,20 @@ void init_semaphore()
 }
 
 void * ProducerFunc(void * arg)
-{	
+{
 	printf("%s\n",(char*)arg);
 	int i;
 	for(i=1;i<=10;i++)
 	{
 		sem_wait(&empty);
 
-		pthread_mutex_lock(&lock);		
-		sleep(1);	
+		pthread_mutex_lock(&lock);
+		sleep(1);
 		q.push(i);
 		printf("producer produced item %d\n",i);
-		
+
 		pthread_mutex_unlock(&lock);
-	
+
 		sem_post(&full);
 	}
 }
@@ -43,18 +51,18 @@ void * ConsumerFunc(void * arg)
 	printf("%s\n",(char*)arg);
 	int i;
 	for(i=1;i<=10;i++)
-	{	
+	{
 		sem_wait(&full);
- 		
+
 		pthread_mutex_lock(&lock);
-			
+
 		sleep(1);
 		int item = q.front();
 		q.pop();
-		printf("consumer consumed item %d\n",item);	
+		printf("consumer consumed item %d\n",item);
 
 		pthread_mutex_unlock(&lock);
-		
+
 		sem_post(&empty);
 	}
 }
@@ -64,19 +72,47 @@ void * ConsumerFunc(void * arg)
 
 
 int main(void)
-{	
+{
+    time_t st = time(NULL);
+
+    cout<<st<<"\n";
+
+    int j = 0;
+
+    sleep(5);
+
+    /*for(int i=0; i<1000000; i++){
+        j += i;
+    }*/
+
+    cout<<j<<"\n";
+
+    time_t en = time(NULL);
+
+    cout<<en - st<<"\n";
+
+    return 0;
+
+    int N,M;
+    int w,x,y,z;
+
+    cin>>N>>M;
+    cin>>w>>x>>y>>z;
+
+
+
 	pthread_t thread1;
 	pthread_t thread2;
-	
+
 	init_semaphore();
-	
+
 	char * message1 = "i am producer";
-	char * message2 = "i am consumer";	
-	
+	char * message2 = "i am consumer";
+
 	pthread_create(&thread1,NULL,ProducerFunc,(void*)message1 );
 	pthread_create(&thread2,NULL,ConsumerFunc,(void*)message2 );
 
-	
+
 	while(1);
 	return 0;
 }
