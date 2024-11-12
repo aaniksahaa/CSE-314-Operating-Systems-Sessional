@@ -23,6 +23,7 @@ void initializeVisitors(int N, int M) {
     std::default_random_engine generator;
     std::poisson_distribution<int> poissonDist(1.0); // Mean = 1.0 (adjust as needed for inter-arrival rate)
 
+
     // Current timestamp tracker
     int currentTimestamp = 0;
 
@@ -53,9 +54,14 @@ void initializeVisitors(int N, int M) {
 
 default_random_engine generator;
 poisson_distribution<int> poissonDist(2.5);
+uniform_int_distribution<int> dd(1, 3);
 
 int get_poisson_rand(){
     return poissonDist(generator);
+}
+
+int get_uni_rand(){
+    return dd(generator);
 }
 
 int main() {
@@ -63,7 +69,7 @@ int main() {
     int M = 3;  // Number of premium ticket holders
 
     for(int i=0; i<N+M; i++){
-        cout<<get_poisson_rand()<<"\n";
+        cout<<get_uni_rand()<<"\n";
     }
 
     return 0;
