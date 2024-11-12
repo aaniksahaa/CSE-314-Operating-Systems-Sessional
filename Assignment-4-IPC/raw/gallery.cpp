@@ -176,6 +176,19 @@ void* standard_visitor_func(void* visitor_index){
     pthread_mutex_unlock(&standard_long_queue_lock);
 
     printf(YELLOW_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+
+
+
+    // this block of code is just for the convenience of demonstration
+    // it may be commented out
+    pthread_mutex_lock(&standard_count_lock);
+    if(standard_count > 1){
+        printf(MAGENTA_COLOR "Attention! Shared Access.\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+    }
+    pthread_mutex_unlock(&standard_count_lock);
+
+
+
     // photo booth actions
     sleep(z);
 
@@ -244,9 +257,8 @@ void* premium_visitor_func(void* visitor_index){
     printf(GREEN_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
     // photo booth actions
     sleep(z);
-    pthread_mutex_unlock(&premium_access_allowed);
-
     printf(RED_COLOR "Visitor %d exited the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+    pthread_mutex_unlock(&premium_access_allowed);
 
     pthread_mutex_lock(&premium_count_lock);
     premium_count -= 1;
@@ -259,13 +271,13 @@ void* premium_visitor_func(void* visitor_index){
 int32_t main() {
     starting_time_s = time(nullptr);
 
-    // cin>>N>>M;
-    // cin>>w>>x>>y>>z;
-
-    init_semaphore();
-
     N = 10, M = 6;
     w = 2, x = 6, y = 6, z = 3;
+
+    cin>>N>>M;
+    cin>>w>>x>>y>>z;
+
+    init_semaphore();
 
     for(int i=0; i<N; i++){
         visitors.push_back(Visitor(1001+i, false, arrival_delay_poisson_dist(rand_generator)));
@@ -290,4 +302,10 @@ int32_t main() {
 
     return 0;
 }
+
+/*
+10 6
+2 6 6 3
+
+*/
 
