@@ -85,6 +85,21 @@ sem_t glass_corridor_remaining_space;
 // these are mutexes for access to the count variables
 pthread_mutex_t standard_count_lock, premium_count_lock;
 
+
+// Intuition:
+// this is Reader-Writer with Writer preference
+// The reader_allowed mutex is locked from the time when
+// the first writer comes to when the last writer exits
+// more importantly, readers are not even allowed to increase their counts in this period
+// so that new incoming writers always get priority
+// however, in case of writers, we do it differently
+// writers can increase their count immediately
+// again, from the first reader, to the exiting reader, we also
+// lock the writer_allowed mutex
+// note that this does not allow new incoming readers to get access while a writer is waiting
+// rather this just makes sure that, while readers are getting shared access
+// no writer can get inside
+
 // these are mutexes indicating whether
 // standard is allowed to visit or premium is allowed to visit
 // say, when standard_access_allowed is locked, this means
@@ -93,6 +108,7 @@ pthread_mutex_t standard_count_lock, premium_count_lock;
 // no premium visitor can access the photo booth
 // and vice versa for unlocked
 pthread_mutex_t standard_access_allowed, premium_access_allowed;
+
 
 // this lock is needed to ensure that a new premium
 // does not starve due to a long queue of waiting standards
