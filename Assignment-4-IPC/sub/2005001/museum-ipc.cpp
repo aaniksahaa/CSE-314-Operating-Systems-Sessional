@@ -193,18 +193,6 @@ void* standard_visitor_func(void* visitor_index){
 
     printf(CYAN_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
 
-
-
-    // this block of code is just for the convenience of demonstration
-    // it may be commented out
-    pthread_mutex_lock(&standard_count_lock);
-    if(standard_count > 2){
-        printf(MAGENTA_COLOR "Attention! Shared Access.\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
-    }
-    pthread_mutex_unlock(&standard_count_lock);
-
-
-
     // photo booth actions
     sleep(z);
 
@@ -294,7 +282,7 @@ int32_t main() {
 
     printf("Usage: \n");
 
-    printf(WHITE_COLOR "1. Points of shared access(>2) will be indicated by " MAGENTA_COLOR "MAGENTA" WHITE_COLOR " color\n" RESET_COLOR);
+    printf(WHITE_COLOR "1. Points of shared access can be manually inspected by the visitor IDs\n" RESET_COLOR);
     printf(WHITE_COLOR "2. To find places where premium got priority, look for the color pattern " YELLOW_COLOR "YELLOW" WHITE_COLOR " [...white] " GREEN_COLOR "GREEN" WHITE_COLOR " or " GREEN_COLOR "GREEN" WHITE_COLOR " [...white] " YELLOW_COLOR "YELLOW" RESET_COLOR "\n");
     printf(WHITE_COLOR "3. To see times of a specific visitor, use " CYAN_COLOR "Ctrl + Shift + F" WHITE_COLOR " on that visitor ID." RESET_COLOR "\n");
 
