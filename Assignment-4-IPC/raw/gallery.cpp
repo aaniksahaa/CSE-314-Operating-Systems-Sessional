@@ -85,7 +85,6 @@ sem_t glass_corridor_remaining_space;
 // these are mutexes for access to the count variables
 pthread_mutex_t standard_count_lock, premium_count_lock;
 
-
 // Intuition:
 // this is Reader-Writer with Writer preference
 // The reader_allowed mutex is locked from the time when
@@ -191,14 +190,15 @@ void* standard_visitor_func(void* visitor_index){
     pthread_mutex_unlock(&standard_access_allowed);
     pthread_mutex_unlock(&standard_long_queue_lock);
 
-    printf(YELLOW_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+
+    printf(CYAN_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
 
 
 
     // this block of code is just for the convenience of demonstration
     // it may be commented out
     pthread_mutex_lock(&standard_count_lock);
-    if(standard_count > 1){
+    if(standard_count > 2){
         printf(MAGENTA_COLOR "Attention! Shared Access.\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
     }
     pthread_mutex_unlock(&standard_count_lock);
@@ -257,7 +257,8 @@ void* premium_visitor_func(void* visitor_index){
     printf("Visitor %d is at E(entered Gallery 2) at timestamp %d\n", visitor.id, get_current_timestamp_s());
 
     // action in Gallery 2 before going to photo booth
-    sleep(y);
+    // this added delay here is just for demonstration convenience
+    sleep(y+1);
 
     printf(GREEN_COLOR "Visitor %d is about to enter the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
 
@@ -268,13 +269,17 @@ void* premium_visitor_func(void* visitor_index){
     }
     pthread_mutex_unlock(&premium_count_lock);
 
+
     // exclusive access for premium
     pthread_mutex_lock(&premium_access_allowed);
-    printf(GREEN_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+    printf(CYAN_COLOR "Visitor %d is inside the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
+
     // photo booth actions
     sleep(z);
     printf(RED_COLOR "Visitor %d exited the photobooth at timestamp %d\n" RESET_COLOR, visitor.id, get_current_timestamp_s());
     pthread_mutex_unlock(&premium_access_allowed);
+
+
 
     pthread_mutex_lock(&premium_count_lock);
     premium_count -= 1;
@@ -287,8 +292,18 @@ void* premium_visitor_func(void* visitor_index){
 int32_t main() {
     starting_time_s = time(nullptr);
 
-    N = 10, M = 6;
-    w = 2, x = 6, y = 6, z = 3;
+    printf("Usage: \n");
+
+    printf(WHITE_COLOR "1. Points of shared access(>2) will be indicated by " MAGENTA_COLOR "MAGENTA" WHITE_COLOR " color\n" RESET_COLOR);
+    printf(WHITE_COLOR "2. To find places where premium got priority, look for the color pattern " YELLOW_COLOR "YELLOW" WHITE_COLOR " [...white] " GREEN_COLOR "GREEN" WHITE_COLOR " or " GREEN_COLOR "GREEN" WHITE_COLOR " [...white] " YELLOW_COLOR "YELLOW" RESET_COLOR "\n");
+    printf(WHITE_COLOR "3. To see times of a specific visitor, use " CYAN_COLOR "Ctrl + Shift + F" WHITE_COLOR " on that visitor ID." RESET_COLOR "\n");
+
+    printf("\nPlease input in this format: \n");
+    printf("N M\n");
+    printf("w x y z\n");
+
+    // N = 10, M = 6;
+    // w = 2, x = 6, y = 6, z = 3;
 
     cin>>N>>M;
     cin>>w>>x>>y>>z;
