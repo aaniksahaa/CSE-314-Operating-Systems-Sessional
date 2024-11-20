@@ -1,0 +1,9 @@
+- dont forget to do init_semaphore in main
+- mutex is actually replaceable by sem_t
+- pay attention to what the initial values should be for each semaphore
+- classics
+	- sync
+	- MAX indicating semaphore
+	- producer-consumer
+	- dining-philosopher
+	- reader writer

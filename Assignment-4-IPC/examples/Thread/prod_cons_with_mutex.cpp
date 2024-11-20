@@ -73,31 +73,12 @@ void * ConsumerFunc(void * arg)
 
 int main(void)
 {
-    time_t st = time(NULL);
-
-    cout<<st<<"\n";
-
-    int j = 0;
-
-    sleep(5);
-
-    /*for(int i=0; i<1000000; i++){
-        j += i;
-    }*/
-
-    cout<<j<<"\n";
-
-    time_t en = time(NULL);
-
-    cout<<en - st<<"\n";
-
-    return 0;
 
     int N,M;
     int w,x,y,z;
 
-    cin>>N>>M;
-    cin>>w>>x>>y>>z;
+    // cin>>N>>M;
+    // cin>>w>>x>>y>>z;
 
 
 

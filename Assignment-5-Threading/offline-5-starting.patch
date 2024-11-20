@@ -1,0 +1,337 @@
+diff --git a/kernel/defs.h b/kernel/defs.h
+index d1b6bb9..9ac6663 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -106,6 +106,10 @@ void            yield(void);
+ int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
+ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
+ void            procdump(void);
++// threading
++int             thread_create(uint64, uint64, uint64);
++int             thread_join(uint64);
++int             thread_exit(uint64);
+ 
+ // swtch.S
+ void            swtch(struct context*, struct context*);
+@@ -165,6 +169,10 @@ void            uvmfirst(pagetable_t, uchar *, uint);
+ uint64          uvmalloc(pagetable_t, uint64, uint64, int);
+ uint64          uvmdealloc(pagetable_t, uint64, uint64);
+ int             uvmcopy(pagetable_t, pagetable_t, uint64);
++
++// threading
++int             uvmsharemap(pagetable_t, pagetable_t, uint64);
++
+ void            uvmfree(pagetable_t, uint64);
+ void            uvmunmap(pagetable_t, uint64, uint64, int);
+ void            uvmclear(pagetable_t, uint64);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 58a8a0b..45aeeab 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -10,6 +10,20 @@ struct cpu cpus[NCPU];
+ 
+ struct proc proc[NPROC];
+ 
++
++// threading
++
++// note that, for all processes that are not threads, 
++// we will have to maintain a synchronized shared memory
++// so the maximum count of them can surely be NPROC (in the extreme case where there are no threads at all)
++// also note that, we could have a synmemid just like pid
++// but since there will be a bijection between the parent (non-thread) processes and the synmems
++// we may just use pids of parent processes as synmem ids
++// these ids will be needed later when we need to find the processes that have the same synmem id
++// alternatively, we could keep a list of such pids in every threads, but it would be expensive
++struct synmem synmem[NPROC];
++
++
+ struct proc *initproc;
+ 
+ int nextpid = 1;
+@@ -56,6 +70,15 @@ procinit(void)
+       p->state = UNUSED;
+       p->kstack = KSTACK((int) (p - proc));
+   }
++
++  // just like proc inits
++  // we init synmems
++  struct synmem *sm;
++  for(sm = synmem; sm < &synmem[NPROC]; sm++) {
++      initlock(&sm->lock, "synmem");
++      sm->taken_by = 0;
++      sm->state = EMPTY;
++  }
+ }
+ 
+ // Must be called with interrupts disabled,
+@@ -107,7 +130,7 @@ allocpid()
+ // and return with p->lock held.
+ // If there are no free procs, or a memory allocation fails, return 0.
+ static struct proc*
+-allocproc(void)
++allocproc(int is_thread)
+ {
+   struct proc *p;
+ 
+@@ -325,6 +348,61 @@ fork(void)
+   return pid;
+ }
+ 
++
++
++// this is much like fork
++int
++thread_create(uint64 fcn, uint64 arg, uint64 stack)
++{
++  int i, pid;
++  struct proc *np;
++  struct proc *p = myproc();
++
++  // Allocate process.
++  if((np = allocproc()) == 0){
++    return -1;
++  }
++
++  // Copy user memory from parent to child.
++  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
++    freeproc(np);
++    release(&np->lock);
++    return -1;
++  }
++  np->sz = p->sz;
++
++  // copy saved user registers.
++  *(np->trapframe) = *(p->trapframe);
++
++  // Cause fork to return 0 in the child.
++  np->trapframe->a0 = 0;
++
++  // increment reference counts on open file descriptors.
++  for(i = 0; i < NOFILE; i++)
++    if(p->ofile[i])
++      np->ofile[i] = filedup(p->ofile[i]);
++  np->cwd = idup(p->cwd);
++
++  safestrcpy(np->name, p->name, sizeof(p->name));
++
++  pid = np->pid;
++
++  release(&np->lock);
++
++  acquire(&wait_lock);
++  np->parent = p;
++  release(&wait_lock);
++
++  acquire(&np->lock);
++  np->state = RUNNABLE;
++  release(&np->lock);
++
++  return pid;
++}
++
++
++
++
+ // Pass p's abandoned children to init.
+ // Caller must hold wait_lock.
+ void
+diff --git a/kernel/proc.h b/kernel/proc.h
+index d021857..628ca4e 100644
+--- a/kernel/proc.h
++++ b/kernel/proc.h
+@@ -81,6 +81,32 @@ struct trapframe {
+ 
+ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+ 
++
++
++
++// threading
++
++enum synmemstate { EMPTY, TAKEN };
++
++// this is a struct
++// to keep track of the shared synchronized memory among threads
++// Intuition:
++// the same physical address space will be shared by the VAspaces of the threads
++// therefore, say when we allocate something in one thread
++// we need to update this info in all the pagetables of the threads that share the same PAS
++// thus, we need to keep track of which processes map to the same PAS
++// and a count of them, so that, while freeing, we may check whether 
++// we may free the PAS actually or whether other processes still depend on that same PAS
++struct synmem{
++  struct spinlock lock;
++  int taken_by;
++  enum synmemstate state;   // EMPTY or TAKEN
++};
++
++
++
++
++
+ // Per-process state
+ struct proc {
+   struct spinlock lock;
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index ed65409..ca12433 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -101,6 +101,10 @@ extern uint64 sys_unlink(void);
+ extern uint64 sys_link(void);
+ extern uint64 sys_mkdir(void);
+ extern uint64 sys_close(void);
++// thread
++extern uint64 sys_thread_create(void);
++extern uint64 sys_thread_join(void);
++extern uint64 sys_thread_exit(void);
+ 
+ // An array mapping syscall numbers from syscall.h
+ // to the function that handles the system call.
+@@ -126,6 +130,9 @@ static uint64 (*syscalls[])(void) = {
+ [SYS_link]    sys_link,
+ [SYS_mkdir]   sys_mkdir,
+ [SYS_close]   sys_close,
++[SYS_thread_create] sys_thread_create,
++[SYS_thread_join]   sys_thread_join,
++[SYS_thread_exit]   sys_thread_exit,
+ };
+ 
+ void
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index bc5f356..3a946ff 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -20,3 +20,7 @@
+ #define SYS_link   19
+ #define SYS_mkdir  20
+ #define SYS_close  21
++// threading
++#define SYS_thread_create   22
++#define SYS_thread_join     23
++#define SYS_thread_exit     24
+diff --git a/kernel/sysproc.c b/kernel/sysproc.c
+index 3b4d5bd..87608c7 100644
+--- a/kernel/sysproc.c
++++ b/kernel/sysproc.c
+@@ -91,3 +91,35 @@ sys_uptime(void)
+   release(&tickslock);
+   return xticks;
+ }
++
++
++uint64
++sys_thread_create(void)
++{
++  // get the arguments first
++  uint64 fcn;
++  uint64 arg;
++  uint64 stack;
++
++  argaddr(0,&fcn);
++  argaddr(1,&arg);
++  argaddr(2,&stack);
++
++  // call the function thread_create in proc.c
++  int return_value = thread_create(fcn, arg, stack);
++
++  return return_value;
++
++}
++
++uint64
++sys_thread_join(void)
++{
++  return 0; 
++}
++
++uint64
++sys_thread_exit(void)
++{
++  return 0;
++}
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 5c31e87..b47a9a7 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -339,6 +339,54 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+   return -1;
+ }
+ 
++
++// this function is needed for thread_create
++// uvmcopy will not work there as it does for fork
++// for the new functionality we need to add this function
++// this is much like uvmcopy
++// except that here we never allocate new physical memory
++// rather we just map to the same physical address space
++// returns 0 on success, -1 on failure.
++// frees any allocated pages on failure.
++int
++uvmmirror(pagetable_t old, pagetable_t new, uint64 sz)
++{
++  pte_t *pte;
++  uint64 pa, i;
++  uint flags;
++  // char *mem; // we dont need to allocate mem actually
++
++  for(i = 0; i < sz; i += PGSIZE){
++    // these checks stay the same
++    if((pte = walk(old, i, 0)) == 0)
++      panic("uvmmirror: pte should exist");
++    if((*pte & PTE_V) == 0)
++      panic("uvmmirror: page not present");
++      
++    pa = PTE2PA(*pte);
++    flags = PTE_FLAGS(*pte);
++
++    // omitting this part
++    // since we will not allocate new physical memory
++    // if((mem = kalloc()) == 0)
++    //   goto err;
++    // memmove(mem, (char*)pa, PGSIZE);
++
++    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
++      // kfree(mem); // nothing allocated, so nothing to free
++      goto err;
++    }
++  }
++  return 0;
++
++ err:
++  uvmunmap(new, 0, i / PGSIZE, 1);
++  return -1;
++}
++
++
++
++
+ // mark a PTE invalid for user access.
+ // used by exec for the user stack guard page.
+ void
+diff --git a/user/user.h b/user/user.h
+index 04013ca..adc7e95 100644
+--- a/user/user.h
++++ b/user/user.h
+@@ -22,6 +22,10 @@ int getpid(void);
+ char* sbrk(int);
+ int sleep(int);
+ int uptime(void);
++// threading syscalls
++int thread_create(void(*fcn)(void*), void *arg, void*stack);
++int thread_join(int thread_id);
++void thread_exit(void);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff --git a/user/usys.pl b/user/usys.pl
+index 01e426e..a334aa7 100755
+--- a/user/usys.pl
++++ b/user/usys.pl
+@@ -36,3 +36,6 @@ entry("getpid");
+ entry("sbrk");
+ entry("sleep");
+ entry("uptime");
++entry("thread_create");
++entry("thread_join");
++entry("thread_exit");
