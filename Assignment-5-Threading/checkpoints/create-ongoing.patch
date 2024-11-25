@@ -1,0 +1,532 @@
+diff --git a/Makefile b/Makefile
+index 62fd0f8..0da83ea 100644
+--- a/Makefile
++++ b/Makefile
+@@ -139,6 +139,7 @@ UPROGS=\
+ 	$U/_grind\
+ 	$U/_wc\
+ 	$U/_zombie\
++	$U/_threads\
+ 
+ fs.img: mkfs/mkfs README $(UPROGS)
+ 	mkfs/mkfs fs.img README $(UPROGS)
+diff --git a/kernel/defs.h b/kernel/defs.h
+index 9ac6663..806dc30 100644
+--- a/kernel/defs.h
++++ b/kernel/defs.h
+@@ -89,6 +89,10 @@ int             growproc(int);
+ void            proc_mapstacks(pagetable_t);
+ pagetable_t     proc_pagetable(struct proc *);
+ void            proc_freepagetable(pagetable_t, uint64);
++
++// threading
++void            proc_unmappagetable(pagetable_t, uint64);
++
+ int             kill(int);
+ int             killed(struct proc*);
+ void            setkilled(struct proc*);
+@@ -171,7 +175,8 @@ uint64          uvmdealloc(pagetable_t, uint64, uint64);
+ int             uvmcopy(pagetable_t, pagetable_t, uint64);
+ 
+ // threading
+-int             uvmsharemap(pagetable_t, pagetable_t, uint64);
++int                uvmmirror(pagetable_t, pagetable_t, uint64, uint64);
++uint64             uvmdemirror(pagetable_t, uint64, uint64);
+ 
+ void            uvmfree(pagetable_t, uint64);
+ void            uvmunmap(pagetable_t, uint64, uint64, int);
+diff --git a/kernel/proc.c b/kernel/proc.c
+index 48fa058..643907f 100644
+--- a/kernel/proc.c
++++ b/kernel/proc.c
+@@ -125,6 +125,8 @@ allocpid()
+   return pid;
+ }
+ 
++// here the difference is that, we take a 'is_thread' argument
++// as do additional things as such
+ // Look in the process table for an UNUSED proc.
+ // If found, initialize state required to run in the kernel,
+ // and return with p->lock held.
+@@ -137,6 +139,7 @@ allocproc(int is_thread)
+   for(p = proc; p < &proc[NPROC]; p++) {
+     acquire(&p->lock);
+     if(p->state == UNUSED) {
++      // note that we do not release the lock here
+       goto found;
+     } else {
+       release(&p->lock);
+@@ -153,11 +156,16 @@ found:
+   // threading
+ 
+   // initializing other new fields
++  // we actually added three new fields
++  // is_thread
++  // synmem_id
++  // synmem
+   p->is_thread = is_thread;
+   // note that, if p is not a thread, these fields will be set in the thread_create function
+   if(!is_thread){
+     // non-thread process
+     // so we first set its synmem_id
++    // we just use the pid as synmem_id since this will be a bijection
+     p->synmem_id = p->pid;
+ 
+     // now we do an exhaustive search for a free place for the synmem
+@@ -182,7 +190,10 @@ found:
+   }
+ 
+ 
+-
++  // please note that
++  // trapframe is always allocated for every new process/thread
++  // so this is not mirrored like other memory...
++  // this is important, since the set of registers of all threads must be different
+   // Allocate a trapframe page.
+   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+     freeproc(p);
+@@ -204,6 +215,7 @@ found:
+   p->context.ra = (uint64)forkret;
+   p->context.sp = p->kstack + PGSIZE;
+ 
++  // so if everything is ok, we do not actually release the p->lock yet
+   return p;
+ }
+ 
+@@ -217,27 +229,48 @@ freeproc(struct proc *p)
+     kfree((void*)p->trapframe);
+   p->trapframe = 0;
+ 
++
++
++
+   // threading
+ 
++  // clearing newly added fields
++  // we actually added three new fields
++  // is_thread
++  // synmem_id
++  // synmem
+   p->is_thread = 0;
+   p->synmem_id = 0;
+ 
+   if(p->pagetable){
+     struct synmem* sm = p->synmem;
+     acquire(&sm->lock);
++    // decrementing the counter
+     sm->taken_by--;
++
++    // if now this synmem is pointed to by none...
+     if(sm->taken_by == 0){
+       sm->state = EMPTY;
+       release(&sm->lock);
++      // only in this case
++      // we fully free the physical address space
++      // and also unmap
+       proc_freepagetable(p->pagetable, p->sz);
+ 
+-      sm = 0; // free sm too
++      // but sm should not freed
++      // then sm->state would be unavailable next
++      // sm = 0; // free sm too
+     } else{
+       release(&sm->lock);
++      // but here we just unmap
++      // and not free the physical memory
+       proc_unmappagetable(p->pagetable, p->sz);
+     }
+   }
+ 
++
++
++
+   p->pagetable = 0;
+   p->sz = 0;
+   p->pid = 0;
+@@ -303,6 +336,7 @@ proc_unmappagetable(pagetable_t pagetable, uint64 sz)
+   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+   // instead of freeing, we now just unmap
+   // with demirror
++  // we want to demirror and make its size from sz to 0
+   uvmdemirror(pagetable, sz, 0);
+ }
+ 
+@@ -345,25 +379,132 @@ userinit(void)
+   release(&p->lock);
+ }
+ 
++// this function is changed to reflect the sync of memory among threads
++// now we will not only allocate memory
++// but also, we may sometimes mirror that allocated memory to others
++// who share the same physical address space
++// but another thing must also be handled
++// say we could allocate the memory correctly for one thread
++// but the mirroring failed for some other sibling
++// we should then deallocate the memory and demirror for all others
+ // Grow or shrink user memory by n bytes.
+ // Return 0 on success, -1 on failure.
+ int
+ growproc(int n)
+ {
+-  uint64 sz;
++  uint64 my_oldsz, my_newsz;
++
+   struct proc *p = myproc();
+ 
+-  sz = p->sz;
++  my_oldsz = p->sz;
++  my_newsz = p->sz + n;
++
++  // find own synmem_id
++  int my_synmem_id;
++  // acquire(&p->lock);
++  my_synmem_id = p->synmem_id;
++  // release(&p->lock);
+ 
++  // here, one simple big issue that may arise
++  // is, say, two sibling threads want to do growproc() at the same time, (eg. by malloc)
++  // since there share the same PAS, this may cause problem
++  // as a workaround, the common synmem among them is locked
++  // so that, other siblings wait until one finishes growing
++  struct synmem* sm = p->synmem;
++  acquire(&sm->lock);
++
++  // case 1: we need to allocate
+   if(n > 0){
+-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
++    uint64 sz_after_allocation = uvmalloc(p->pagetable, my_oldsz, my_newsz, PTE_W);
++    if(sz_after_allocation == 0){
++      release(&sm->lock);
+       return -1;
+     }
+-  } else if(n < 0){
+-    sz = uvmdealloc(p->pagetable, sz, sz + n);
++    p->sz = my_newsz = sz_after_allocation;
++
++    // otherwise the alloc was successful
++    // now we will need to propagate this to others
++    // who share the same synmem_id
++    struct proc *q;
++    for(q = proc; q < &proc[NPROC]; q++) {
++      if(q == p){
++        // ignore self
++        continue; 
++      }
++
++      acquire(&q->lock);
++      if((q->synmem_id == my_synmem_id) && (q->state != ZOMBIE)){
++        if(q->sz != my_oldsz){
++          panic("at growproc: case 1; shared memory not synchronized");
++        }
++        if(uvmmirror(p->pagetable, q->pagetable, my_oldsz, my_newsz)<0){
++          release(&q->lock);
++          // we need to do many corrective actions
++          goto mirrorerr;
++        }
++        // we increase the size
++        // although no new physical memory has been allocated
++        q->sz = my_newsz;
++      }
++      release(&q->lock);
++    }
++  } 
++  // case 2: we need to deallocate
++  else if(n < 0){
++    // please note that
++    // throughout the following code block
++    // my_newsz is actually less than my_oldsz
++
++    // first deallocate for the calling process/thread
++    p->sz = my_newsz = uvmdealloc(p->pagetable, my_oldsz, my_newsz);
++
++    // now propagate the update by demirroring
++    struct proc* q;
++    for(q = proc; q < &proc[NPROC]; q++) {
++      if(q == p){
++        // ignore self
++        continue; 
++      }
++
++      acquire(&q->lock);
++      if((q->synmem_id == my_synmem_id) && (q->state != ZOMBIE)){
++        if(q->sz != my_oldsz){
++          panic("at growproc: case 2; shared memory not synchronized");
++        }
++        q->sz = uvmdemirror(q->pagetable, my_oldsz, my_newsz);
++      }
++      release(&q->lock);
++    }
+   }
+-  p->sz = sz;
++  
++  release(&sm->lock);
+   return 0;
++
++mirrorerr:
++  // please note that
++  // this code block can only be reached from case 1
++  // so here, my_newsz is greater than my_oldsz
++  p->sz = uvmdealloc(p->pagetable, my_newsz, my_oldsz);
++  struct proc* q;
++  for(q = proc; q < &proc[NPROC]; q++) {
++    if(q == p){
++      // ignore self
++      continue; 
++    }
++
++    acquire(&q->lock);
++    if((q->synmem_id == my_synmem_id) && (q->state != ZOMBIE)){
++      // we demirror only those that have so far been mirrored
++      // so this checking is needed
++      if(q->sz != my_oldsz){
++        q->sz = uvmdemirror(q->pagetable, my_newsz, my_oldsz);
++      }
++    }
++    release(&q->lock);
++  }
++
++  release(&sm->lock);
++  return -1;
+ }
+ 
+ // Create a new process, copying the parent.
+@@ -375,7 +516,8 @@ fork(void)
+   struct proc *np;
+   struct proc *p = myproc();
+ 
+-  // Allocate process.
++  // Allocate process
++  // so i pass 0 as argument
+   if((np = allocproc(0)) == 0){
+     return -1;
+   }
+@@ -427,24 +569,67 @@ thread_create(uint64 fcn, uint64 arg, uint64 stack)
+   struct proc *np;
+   struct proc *p = myproc();
+ 
+-  // Allocate process.
++  // say when a process is creating a thread
++  // another already created child thread may be trying to do growproc()
++  // for this problem, we need to hold the shared synmem lock
++  acquire(&p->synmem->lock);
++
++  // Allocate thread
++  // so i pass 0 as argument
+   if((np = allocproc(1)) == 0){
++    release(&p->synmem->lock);
+     return -1;
+   }
+ 
+-  // Copy user memory from parent to child.
+-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
++  // instead of copy
++  // just mirror and point to the same PAS as the parent
++  if(uvmmirror(p->pagetable, np->pagetable, 0, p->sz) < 0){
+     freeproc(np);
+     release(&np->lock);
++    release(&p->synmem->lock);
+     return -1;
+   }
++
++  // now we set the properties of np
+   np->sz = p->sz;
++  p->synmem->taken_by++;
++  np->synmem_id = p->synmem_id;
++  np->synmem = p->synmem;
+ 
+   // copy saved user registers.
+   *(np->trapframe) = *(p->trapframe);
+ 
+-  // Cause fork to return 0 in the child.
+-  np->trapframe->a0 = 0;
++  // setting trapframe registers
++
++  // since the thread starts execution from fcn
++  // we may actually consider this fcn as the main() for this thread
++  // thus the ra should be the ra of main()
++  // it is 0xFFFFFFFF as per xv6 book
++  np->trapframe->ra = 0xFFFFFFFF;
++
++  // making the thread forcefully start at the address pointed to by fcn
++  np->trapframe->epc = fcn;
++
++  // passing the argument arg
++  np->trapframe->a0 = arg;
++
++  uint64 sp = stack + PGSIZE;
++  // for ra
++  sp -= sizeof(uint64);
++  // this line is from exec.c
++  sp -= sp % 16; // riscv sp must be 16-byte aligned
++
++  // copy the ra value to the topmost address of stack
++  if(copyout(np->pagetable, sp, (char *)(&np->trapframe->ra), sizeof(uint64)) < 0){
++    freeproc(np);
++    release(&np->lock);
++    release(&p->synmem->lock);
++    return -1;
++  }
++
++  np->trapframe->sp = sp;
++
++  release(&p->synmem->lock);
+ 
+   // increment reference counts on open file descriptors.
+   for(i = 0; i < NOFILE; i++)
+diff --git a/kernel/vm.c b/kernel/vm.c
+index 9dc3e4a..70f2333 100644
+--- a/kernel/vm.c
++++ b/kernel/vm.c
+@@ -275,7 +275,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+ 
+ 
+ // this function is exactly like uvmdealloc
+-// the differene is that here we do not free the physical memory
++// the difference is that here we do not free the physical memory
+ // rather just perform unmap
+ // Unmap user pages to bring the process size from oldsz to
+ // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+@@ -284,12 +284,14 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+ uint64
+ uvmdemirror(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+ {
++  // in this case, nothing to demirror
+   if(newsz >= oldsz)
+     return oldsz;
+ 
+   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+     // note that here we pass 0 as last argument
++    // unlike 1 in uvmdealloc
+     // it ensures that we just unmap
+     // and do not free
+     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 0);
+@@ -377,15 +379,22 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+ // returns 0 on success, -1 on failure.
+ // frees any allocated pages on failure.
+ int
+-uvmmirror(pagetable_t old, pagetable_t new, uint64 sz)
++uvmmirror(pagetable_t old, pagetable_t new, uint64 newptable_oldsz, uint64 newptable_newsz)
+ {
++  if(newptable_newsz < newptable_oldsz){
++    // nothing to mirror, return
++    return 0;
++  }
++
+   pte_t *pte;
+   uint64 pa, i;
+   uint flags;
+   // char *mem; // we dont need to allocate mem actually
+ 
+-  for(i = 0; i < sz; i += PGSIZE){
+-    // these checks stay the same
++  newptable_oldsz = PGROUNDUP(newptable_oldsz);
++
++  for(i = newptable_oldsz; i < newptable_newsz; i += PGSIZE){
++    // these checks stay the same as uvmcopy
+     if((pte = walk(old, i, 0)) == 0)
+       panic("uvmmirror: pte should exist");
+     if((*pte & PTE_V) == 0)
+@@ -401,14 +410,18 @@ uvmmirror(pagetable_t old, pagetable_t new, uint64 sz)
+     // memmove(mem, (char*)pa, PGSIZE);
+ 
+     if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+-      // kfree(mem); // nothing allocated, so nothing to free
++      // nothing allocated, so nothing to free
++      // kfree(mem); 
+       goto err;
+     }
+   }
+   return 0;
+ 
+  err:
+-  uvmunmap(new, 0, i / PGSIZE, 1);
++  // we should NOT free the physical memory
++  // just UNMAP that part with which we are concerned
++  int npages = (PGROUNDUP(newptable_newsz) - PGROUNDUP(newptable_oldsz)) / PGSIZE;
++  uvmunmap(new, newptable_oldsz, npages, 0);
+   return -1;
+ }
+ 
+diff --git a/user/threads.c b/user/threads.c
+new file mode 100644
+index 0000000..b4b006f
+--- /dev/null
++++ b/user/threads.c
+@@ -0,0 +1,75 @@
++#include "kernel/types.h"
++#include "kernel/stat.h"
++#include "user/user.h"
++
++struct balance {
++    char name[32];
++    int amount;
++};
++
++volatile int total_balance = 0;
++
++volatile unsigned int delay (unsigned int d) {
++   unsigned int i; 
++   for (i = 0; i < d; i++) {
++       __asm volatile( "nop" ::: );
++   }
++
++   return i;   
++}
++
++void do_work(void *arg){
++    int i; 
++    int old;
++   
++    struct balance *b = (struct balance*) arg; 
++    printf( "Starting do_work: s:%s\n", b->name);
++
++    for (i = 0; i < b->amount; i++) { 
++        // lock and mlock will be implemented by you.
++         // thread_spin_lock(&lock);
++         // thread_mutex_lock(&mlock);
++         old = total_balance;
++         delay(100000);
++	 // if(old != total_balance)  printf("we will miss an update. old: %d total_balance: %d\n", old, total_balance);
++         total_balance = old + 1;
++         //thread_spin_unlock(&lock);
++         // thread_mutex_lock(&mlock);
++
++    }
++    
++    printf( "Done\n");
++    // printf( "Done s:%x\n", b->name);
++
++    // exit();
++    return;
++}
++
++int main(int argc, char *argv[]) {
++
++  struct balance b1 = {"b1", 3200};
++  struct balance b2 = {"b2", 2800};
++ 
++  void *s1, *s2;
++  int thread1, thread2, r1, r2;
++//   int thread1, thread2;
++
++  s1 = malloc(4096); // 4096 is the PGSIZE defined in kernel/riscv.h
++  s2 = malloc(4096);
++
++  thread1 = thread_create(do_work, (void*)&b1, s1);
++  thread2 = thread_create(do_work, (void*)&b2, s2); 
++
++//   r1 = thread_join(thread1);
++//   r2 = thread_join(thread2);
++
++  r1 = wait(thread1);
++  r2 = wait(thread2);
++  
++  printf("Threads finished: (%d):%d, (%d):%d, shared balance:%d\n", 
++      thread1, r1, thread2, r2, total_balance);
++
++  printf("Threads finished\n");
++
++  exit(0);
++}
+\ No newline at end of file
